@@ -1,12 +1,15 @@
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { chromium } from 'playwright-core';
 import { serve } from './serve.mjs';
 
 const chrome = process.env.GAMESHOW_CHROME ??
   (process.platform === 'win32' ? 'C:/Program Files/Google/Chrome/Application/chrome.exe' : '/usr/bin/google-chrome');
-const profile = await mkdtemp(resolve(await mkdir('test-output', { recursive: true }).then(() => 'test-output'), 'profile-'));
+await mkdir('test-output', { recursive: true });
+// A deeply nested checkout can exceed Chromium's cache path limits on Windows.
+const profile = await mkdtemp(resolve(tmpdir(), 'gameshow-profile-'));
 const args = ['--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream',
   '--disable-background-networking', '--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1'];
 const { server, url } = await serve({ directory: process.env.GAMESHOW_BROWSER_DIST ?? 'dist' });
@@ -294,5 +297,6 @@ try {
 } finally {
   await context?.close();
   if (server.listening) await new Promise(resolve => server.close(resolve));
+  await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
 }
 
