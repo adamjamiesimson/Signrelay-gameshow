@@ -14,7 +14,7 @@ Open [http://127.0.0.1:8787](http://127.0.0.1:8787) in desktop Chrome. Keep usin
 
 ## Build from source
 
-Requires Node.js 22+, pnpm 11.25.0 and Chrome or Chromium for browser tests. Provisioning requires network access once. The four large model files are fetched from pinned public URLs and verified. The teaching clips and logo are included in this release.
+Clone the [dedicated GameShow repository](https://github.com/adamjamiesimson/Signrelay-gameshow) and use its default `main` branch. Requires Node.js 22+, pnpm 11.25.0 and Chrome or Chromium for browser tests. The four pinned recognition assets, teaching clips and logo are checked in. Installing the locked JavaScript packages requires registry access once. The asset check and build then run from local files.
 
 ```sh
 pnpm install --frozen-lockfile

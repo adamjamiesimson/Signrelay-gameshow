@@ -3,8 +3,12 @@ dist/
 .env*
 .firebase/
 .firebaserc
-public/model/
-public/vision/
+public/model/*
+!public/model/model.onnx
+!public/model/meta.json
+public/vision/*
+!public/vision/hand_landmarker.task
+!public/vision/pose_landmarker_lite.task
 test-output/
 *.backup.json
 

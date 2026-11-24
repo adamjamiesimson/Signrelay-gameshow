@@ -10,8 +10,20 @@ const read = path => blob(path).toString('utf8');
 const sha = bytes => createHash('sha256').update(bytes).digest('hex');
 const paths = git('ls-tree', '-rz', '--name-only', revision).toString('utf8').split('\0').filter(Boolean);
 
+const modelFiles = [
+  'model/meta.json',
+  'model/model.onnx',
+  'vision/hand_landmarker.task',
+  'vision/pose_landmarker_lite.task',
+];
+const pins = JSON.parse(read('asset-pins.json'));
+assert.deepEqual(pins.map(pin => pin.path).sort(), modelFiles);
+const modelPaths = new Set(modelFiles.map(path => 'public/' + path));
+assert.deepEqual(paths.filter(path => /^public\/(model|vision)\//.test(path)).sort(), [...modelPaths]);
+for (const pin of pins) assert.equal(sha(blob('public/' + pin.path)), pin.sha256, 'Unverified model asset ' + pin.path);
+
 const forbidden = /(?:^|\/)(?:\.env(?:\.[^/]+)?|\.firebaserc|\.firebase|\.gitmodules|\.github|node_modules|dist|test-output|.*\.backup\.json|.*\.(?:csv|y4m|mov|webm|pem|pfx|p12|key|zip|onnx|task|wasm))$/i;
-assert.deepEqual(paths.filter(path => forbidden.test(path)), [], 'Unexpected sensitive or generated paths');
+assert.deepEqual(paths.filter(path => !modelPaths.has(path) && forbidden.test(path)), [], 'Unexpected sensitive or generated paths');
 assert.ok(paths.every(path => /^(?:public|scripts|src|docs|tests)\//.test(path) ||
   ['.gitattributes', '.gitignore', 'README.md', 'asset-pins.json', 'firebase.json', 'vercel.json', 'package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml'].includes(path)),
   'Unexpected path outside standalone GameShow');
@@ -50,5 +62,5 @@ for (const path of paths.filter(path => /\.(mjs|js|json|yaml|html|css|md)$/.test
   }
 }
 assert.deepEqual(suspect, [], 'Potential credentials in release');
-console.log('PASS ' + paths.length + ' tracked paths · ten pinned public lessons · no private media, backups, deployment credentials, or known secret signatures');
+console.log('PASS ' + paths.length + ' tracked paths · four pinned model assets · ten pinned public lessons · no private media, backups, deployment credentials, or known secret signatures');
 

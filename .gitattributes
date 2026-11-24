@@ -7,3 +7,4 @@
 *.onnx binary
 *.task binary
 *.wasm binary
+public/model/meta.json -text
