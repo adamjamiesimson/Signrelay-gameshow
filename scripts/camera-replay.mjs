@@ -1,11 +1,14 @@
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { launch } from './browser-common.mjs';
 import { serve } from './serve.mjs';
 
 const [sample, target = 'PLEASE', wrong = 'DRINK', random = '0'] = process.argv.slice(2);
 if (!sample) throw new Error('Usage: node scripts/camera-replay.mjs <please.y4m>');
-const { server, url } = await serve({ directory: process.env.GAMESHOW_BROWSER_DIST ?? 'dist' });
+const remote = process.env.GAMESHOW_TEST_URL;
+const local = remote ? undefined : await serve({ directory: process.env.GAMESHOW_BROWSER_DIST ?? 'dist' });
+const url = remote ?? local.url;
 let browser;
 try {
   browser = await launch({ args: ['--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream',
@@ -57,8 +60,32 @@ try {
   assert.match(await page.locator('#board-list [aria-current=true] .board-score').textContent(), /^10\/50$/);
   console.log('PASS prerecorded ' + target + ' awarded one automatic +10 after ' + targetMs + ' ms; ' +
     wrong + ' timed out after ' + timeoutMs + ' ms with no additional score.');
+  if (remote) {
+    const { version } = JSON.parse(await readFile('dist/runtime.json'));
+    const ready = async () => {
+      await click('Host controls');
+      await page.waitForFunction(expected => {
+        const text = document.querySelector('#diagnostics').textContent;
+        return text.includes('Model  Ready') && text.includes('Offline  Ready') && text.includes(expected);
+      }, version, { timeout: 90000 });
+      await click('Close host controls');
+    };
+    await ready();
+    await page.context().setOffline(true);
+    await page.reload();
+    await page.locator('#registration-stage').waitFor();
+    assert.equal(await page.locator('#roster input').first().inputValue(), '');
+    await ready();
+    await page.locator('#roster input').first().fill('Offline replay');
+    await click('Start Game');
+    await spin();
+    await page.waitForFunction(() => document.querySelector('#lesson-video').readyState >= 2);
+    await click('Ready');
+    await page.waitForFunction(() => document.querySelector('#camera').srcObject?.active);
+    console.log('PASS hosted build ' + version + ' reloaded offline with registration, lesson and camera');
+  }
 } finally {
   await browser?.close();
-  await new Promise(resolve => server.close(resolve));
+  if (local) await new Promise(resolve => { local.server.close(resolve); local.server.closeAllConnections(); });
 }
 

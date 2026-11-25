@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
+import { setTimeout as wait } from 'node:timers/promises';
 import { chromium } from 'playwright-core';
 import { serve } from './serve.mjs';
 
@@ -16,6 +17,10 @@ const chrome = process.env.GAMESHOW_CHROME ??
 const openBrowser = () => chromium.launchPersistentContext(profile, { executablePath: chrome, headless: true, reducedMotion: 'reduce' });
 let server;
 let context;
+const stopServer = () => new Promise(done => {
+  server.close(done);
+  server.closeAllConnections();
+});
 try {
   const initial = await serve({ directory: base });
   server = initial.server;
@@ -42,16 +47,21 @@ try {
   }
   await page.waitForFunction(() => document.querySelector('#board-count').textContent === '1 player');
 
-  await new Promise(done => server.close(done));
+  await stopServer();
   server = (await serve({ port })).server;
   await page.evaluate(async () => (await navigator.serviceWorker.getRegistration()).update());
-  await page.waitForFunction(async ({ before, after }) => {
-    const cachesNow = await caches.keys();
-    return cachesNow.includes('signrelay-gameshow-' + after) && !cachesNow.includes('signrelay-gameshow-' + before);
-  }, { before, after });
+  let activated = false;
+  const deadline = Date.now() + 60000;
+  while (!activated && Date.now() < deadline) {
+    const keys = await page.evaluate(() => caches.keys());
+    activated = keys.includes('signrelay-gameshow-' + after) && !keys.includes('signrelay-gameshow-' + before);
+    if (!activated) await wait(250);
+  }
+  assert.ok(activated, 'The new worker did not finish activating within 60 seconds');
   assert.match(await page.locator('#board-list .board-name').first().textContent(), /Upgrade test player/);
   await page.reload();
   await page.locator('#registration-stage').waitFor();
+  console.log('PASS the active page stayed open during cache activation and reloaded into registration');
   await context.close();
   context = await openBrowser();
   page = context.pages()[0];
@@ -71,14 +81,14 @@ try {
   assert.ok(cachesAfter.includes('signrelay-gameshow-' + after));
   assert.ok(!cachesAfter.includes('signrelay-gameshow-' + before));
   await context.setOffline(true);
-  await new Promise(done => server.close(done));
+  await stopServer();
   await page.reload();
   await ready(after);
   await page.locator('#registration-stage').waitFor();
   console.log('PASS same-origin upgrade ' + before + ' → ' + after + ' replaced the old cache and reopened offline at registration, with no historical player shown.');
 } finally {
   await context?.close();
-  if (server?.listening) await new Promise(done => server.close(done));
+  if (server?.listening) await stopServer();
   await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
 }
 

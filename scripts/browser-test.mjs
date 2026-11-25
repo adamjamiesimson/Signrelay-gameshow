@@ -22,6 +22,10 @@ const click = (name, scope = page) => button(name, scope).click();
 const host = () => page.locator('#host');
 const waitText = (selector, phrase) => page.waitForFunction(({ selector, phrase }) =>
   document.querySelector(selector)?.textContent.includes(phrase), { selector, phrase }, delay);
+const stopServer = () => new Promise(done => {
+  local.server.close(done);
+  local.server.closeAllConnections();
+});
 
 async function openBrowser() {
   context = await chromium.launchPersistentContext(profile, { executablePath: chrome, headless: true,
@@ -47,6 +51,12 @@ async function readiness() {
 async function confirm(name) {
   await click(name, host());
   await click(name, page.locator('#confirm'));
+}
+
+async function hostJudging(enabled) {
+  await click('Host controls');
+  await page.locator('#manual').setChecked(enabled);
+  await click('Close host controls', host());
 }
 
 async function register(names) {
@@ -157,10 +167,12 @@ try {
     return Math.round((await session.send('Runtime.getHeapUsage')).usedSize / 1000) / 1000;
   };
   const before = await heap();
+  await hostJudging(true);
   await playGame(['Solo']);
   await playGame(['Alex', 'Alex'], { failFirst: true });
   await playGame(['First', 'Second', 'Third', 'Fourth'], { checkHost: true });
   await playGame(Array.from({ length: 8 }, (_, i) => 'Player ' + (i + 1)));
+  await hostJudging(false);
   console.log('PASS 75 completed turns across repeated games · renderer JS heap after GC ' + before + ' → ' + await heap() + ' MB');
   await register(['Reset check']);
   await click('Host controls');
@@ -174,14 +186,16 @@ try {
   await click('Fullscreen leaderboard');
   await click('Close leaderboard');
   assert.ok(!(await page.evaluate(() => Object.values(localStorage).join('').includes('Reset check'))));
+  console.log('PASS expanded leaderboard and current roster kept out of browser settings');
 
   await context.close();
   await openBrowser();
   await page.goto(url);
   await stage('registration');
   await readiness();
+  console.log('PASS fresh browser restart with models and cache intact');
   await context.setOffline(true);
-  if (local) await new Promise(done => local.server.close(done));
+  if (local) await stopServer();
   await page.reload();
   await stage('registration');
   await readiness();
@@ -200,6 +214,6 @@ try {
   console.log('PASS expanded leaderboard, host controls, fresh browser restart, offline models, lessons, camera and scoring');
 } finally {
   await context?.close();
-  if (local?.server.listening) await new Promise(done => local.server.close(done));
+  if (local?.server.listening) await stopServer();
   await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
 }
