@@ -1,6 +1,7 @@
 import { leaderboard, MAX_ROUNDS, MODES, player, score, streaks, successful } from './game.mjs';
 import { signById } from './signs.mjs';
 import { icon } from './icons.mjs';
+import { nextPlayer, roundNumber } from './party.mjs';
 
 export const $ = name => document.getElementById(name);
 export const escapeHtml = value => String(value).replace(/[&<>"']/g, character =>
@@ -12,7 +13,7 @@ const podium = (current, p) => '<li class="board-row' + (current === p.id ? ' ac
   '" data-row="' + p.id + '"' + (current === p.id ? ' aria-current="true"' : '') + '><span class="rank">' + p.rank +
   '</span><div><div class="board-name">' + escapeHtml(p.name) + '</div><div class="board-meta">' + playerNumber(p) +
   ' · ' + p.results.length + '/5 rounds' + (p.streak >= 3 ? ' · ' + p.streak + '-sign streak' : '') +
-  '</div></div><span class="board-score">' + p.points + '<small>/50</small></span></li>';
+  '</div></div><span class="board-score"><span data-points="' + p.points + '">' + p.points + '</span><small>/50</small></span></li>';
 
 export function setupIcons() {
   for (const [action, mark] of Object.entries({ mute:'sound', fullscreen:'fullscreen', host:'gear', leaderboard:'board', 'leader-fullscreen':'fullscreen', replay:'replay' })) {
@@ -27,21 +28,36 @@ export function renderBoard(state) {
   for (const id of ['board-list', 'full-board']) {
     const list = $(id);
     if (id === 'full-board' && !$('leader-dialog').open) continue;
-    const previous = new Map([...list.querySelectorAll('[data-row]')].slice(0, 50).map(row => [row.dataset.row, row.offsetTop]));
+    const previous = new Map([...list.querySelectorAll('[data-row]')].map(row => [row.dataset.row,
+      { top: row.offsetTop, points: Number(row.querySelector('[data-points]')?.textContent) }]));
     const scroll = list.scrollTop;
     list.innerHTML = rows.length ? rows.map(p => podium(state.activeId, p)).join('') :
       '<li class="board-empty">Scores appear when players join.</li>';
     list.scrollTop = scroll;
     if (!matchMedia('(prefers-reduced-motion: reduce)').matches) {
-      [...list.querySelectorAll('[data-row]')].slice(0, 50).forEach(row => {
-        const previousTop = previous.get(row.dataset.row);
-        if (previousTop !== undefined && previousTop !== row.offsetTop) row.animate(
-          [{ transform: 'translateY(' + (previousTop - row.offsetTop) + 'px)' }, { transform: 'none' }], { duration: 330, easing: 'ease-out' });
+      [...list.querySelectorAll('[data-row]')].forEach(row => {
+        const prior = previous.get(row.dataset.row);
+        if (!prior) return;
+        if (prior.top !== row.offsetTop) row.animate(
+          [{ transform: 'translateY(' + (prior.top - row.offsetTop) + 'px)' }, { transform: 'none' }], { duration: 330, easing: 'ease-out' });
+        const points = row.querySelector('[data-points]');
+        const total = Number(points.dataset.points);
+        if (Number.isFinite(prior.points) && prior.points !== total) {
+          const start = performance.now();
+          const step = now => {
+            if (!points.isConnected) return;
+            const part = Math.min(1, (now - start) / 330);
+            points.textContent = Math.round(prior.points + (total - prior.points) * part);
+            if (part < 1) requestAnimationFrame(step);
+          };
+          requestAnimationFrame(step);
+        }
       });
     }
   }
   $('board-count').textContent = rows.length + (rows.length === 1 ? ' player' : ' players');
   const p = player(state);
+  const next = nextPlayer(state);
   const count = p?.results.length ?? 0;
   const dots = Array.from({ length: MAX_ROUNDS }, (_, i) => {
     const kind = i < count ? successful(p.results[i]) ? 'won' : 'missed' : i === count && p ? 'next' : '';
@@ -50,28 +66,17 @@ export function renderBoard(state) {
   $('player-card').innerHTML = p
     ? '<div class="player-card-head"><div><p class="eyebrow">CURRENT PLAYER</p><h2>' +
       escapeHtml(p.name) + ' <span>' + playerNumber(p) + '</span></h2></div><span class="board-score">' + score(p) +
-      '<small>/50</small></span></div><div class="round-dots" aria-label="' + count + ' of 5 rounds complete">' + dots + '</div>'
-    : '<div class="player-card-head"><div><p class="eyebrow">CURRENT PLAYER</p><h2>Ready when you are</h2></div></div><p class="player-hint">Join or find your name to play.</p>';
-}
-
-export function renderPeople(state) {
-  const query = $('search').value.trim().toLocaleLowerCase();
-  const scroll = $('people').scrollTop;
-  $('people').innerHTML = [...state.people].reverse().filter(p =>
-    p.name.toLocaleLowerCase().includes(query) || playerNumber(p).includes(query)
-  ).map(p => '<div class="person-row"><button data-action="select" data-person="' + p.id + '" class="person-info' +
-    (p.id === state.activeId ? ' active' : '') + '"><span>' + escapeHtml(p.name) + ' · ' + playerNumber(p) +
-    '</span><small>' + score(p) + '/50 · ' + (MAX_ROUNDS - p.results.length) + ' left</small></button><button data-action="rename" data-person="' +
-    p.id + '" aria-label="Edit ' + escapeHtml(p.name) + '">Edit</button><button data-action="remove" data-person="' +
-    p.id + '" aria-label="Remove ' + escapeHtml(p.name) + '">Remove</button></div>').join('') ||
-    '<p class="board-empty">' + (query ? 'No matching players.' : 'No players registered.') + '</p>';
-  $('people').scrollTop = scroll;
+      '<small>/50</small></span></div><div class="round-dots" aria-label="' + count + ' of 5 rounds complete">' + dots + '</div>' +
+      '<p class="player-hint">Round ' + roundNumber(state) + ' of 5 · ' +
+      (next ? 'Next up ' + escapeHtml(next.name) + ' · ' + playerNumber(next) : 'Final turn') + '</p>'
+    : '<p class="eyebrow">GAME COMPLETE</p><h2>Final standings</h2>';
 }
 
 function stage(name) {
   const previous = document.body.dataset.stage;
   document.body.dataset.stage = name;
-  for (const id of ['wheel', 'teaching', 'challenge', 'result', 'completion']) $(id + '-stage').hidden = id !== name;
+  for (const id of ['registration', 'wheel', 'teaching', 'challenge', 'result', 'completion']) $(id + '-stage').hidden = id !== name;
+  $('game-side').hidden = name === 'registration';
   if (previous !== name) {
     if (previous === 'teaching') $('lesson-video').pause();
     if (previous === 'challenge') {
@@ -92,18 +97,15 @@ export function renderStage(kind, p, state, ui) {
   const sign = p?.pending ? signById[p.pending.sign] : null;
   if (kind === 'wheel') {
     $('wheel-hub').disabled = !p || ui.spinning;
-    $('wheel-copy').innerHTML = p
-      ? '<p class="eyebrow">ROUND ' + (p.results.length + 1) + ' OF 5</p><h1>Spin the <em>wheel.</em></h1><p class="description">The pointer picks your next ASL sign.</p>' +
-        '<button class="primary gold" data-action="spin"' + (ui.spinning ? ' disabled' : '') + '>' + (ui.spinning ? 'Wheel spinning…' : 'Spin the wheel') + '</button>'
-      : '<p class="eyebrow">SIGNRELAY GAMESHOW</p><h1>Spin. Sign. <em>Score.</em></h1><p class="description">Learn ASL. Beat the clock. Win a lollipop.</p>' +
-        buy('open-players', 'Join the game');
+    $('wheel-copy').innerHTML = '<p class="eyebrow">ROUND ' + roundNumber(state) + ' OF 5 · ' + playerNumber(p) + '</p><h1 id="wheel-title">' + escapeHtml(p.name) + '<em>, you’re up.</em></h1><p class="description">Take your place at the camera, then spin for your sign.</p>' +
+      '<button class="primary gold" data-action="spin"' + (ui.spinning ? ' disabled' : '') + '>' + (ui.spinning ? 'Wheel spinning…' : 'Spin the wheel') + '</button>';
   } else if (kind === 'teaching') {
     $('lesson-copy').innerHTML = '<p class="eyebrow">LEARN ROUND ' + (p.results.length + 1) + '</p><h1 id="lesson-title">' + sign.word +
       '</h1><p class="description">' + sign.cue + '</p><div class="button-row">' +
       '<button class="primary" data-action="start"' + (ui.starting ? ' disabled' : '') + '>' + (ui.starting ? 'Getting ready…' : 'Ready') + '</button>' +
       '</div>' + (ui.problem ? '<p class="player-hint" role="status">' + escapeHtml(ui.problem) + '</p>' : '');
     const video = setVideo('lesson-video', sign);
-    if (!$('players').open && video.paused) video.play().catch(() => {});
+    if (video.paused) video.play().catch(() => {});
   } else if (kind === 'challenge') {
     $('challenge-copy').innerHTML = '<p class="eyebrow">ROUND ' + (p.results.length + 1) + ' OF 5</p><h1 id="challenge-title">' + sign.word +
       '</h1><p class="meta">' + escapeHtml(p.name) + ' · ' + score(p) + '/50 points</p>';
@@ -113,10 +115,10 @@ export function renderStage(kind, p, state, ui) {
     $('camera-message').innerHTML = ui.problem
       ? icon('camera') + '<span>' + escapeHtml(ui.problem) + '</span>'
       : state.settings.manual ? icon('hand') + '<span>Show the sign to your host</span>'
-      : !p.pending.deadline ? icon('camera') + '<span>Challenge paused</span>'
-      : !ui.operator ? '<span>Challenge running in the host tab</span>' : '';
+      : !p.pending.deadline ? icon('camera') + '<span>Challenge paused</span>' : '';
   } else if (kind === 'result') {
     const r = ui.result;
+    const next = nextPlayer(state);
     const correct = successful(r);
     const chain = streaks(p).current;
     const screen = $('result-stage');
@@ -124,19 +126,26 @@ export function renderStage(kind, p, state, ui) {
     screen.innerHTML = '<p class="eyebrow">' + signById[r.sign].word + ' · ROUND ' + p.results.length + ' OF 5</p><h1>' +
       (correct ? 'You signed it!' : 'Nice try!') + '</h1><div class="result-points">' + (correct ? '+10' : '+0') +
       ' <small>points</small></div>' + (correct && chain >= 3 ? '<p class="streak">' + icon('bolt') + ' ' + chain + '-SIGN STREAK</p>' : '') +
-      '<p class="description">' + (correct ? score(p) + ' out of 50 points so far.' : 'Time’s up. Your next sign is a fresh start.') +
-      '</p>' + buy('next', 'Next round');
+      '<p class="description">' + escapeHtml(p.name) + ' · ' + score(p) + '/50' +
+      (next ? '<br>Up next ' + escapeHtml(next.name) + ' · ' + playerNumber(next) : '') +
+      '</p>' + buy('next', next ? state.people.length === 1 ? 'Next round' : 'Next Player' : 'See final results');
   } else if (kind === 'completion') {
-    const points = score(p);
-    const perfect = points === 50;
-    const rank = leaderboard(state.people).find(row => row.id === p.id)?.rank;
+    const rows = leaderboard(state.people);
+    const winners = rows.filter(row => row.rank === 1);
+    const places = [2, 1, 3].map(rank => {
+      const people = rows.filter(row => row.rank === rank);
+      return '<li class="podium-place place-' + rank + '"><span>' + ['','1st','2nd','3rd'][rank] + '</span>' +
+        (people.length ? people.map(row => '<strong>' + escapeHtml(row.name) + ' <small>' + playerNumber(row) + '</small></strong>').join('') +
+          '<span>' + people[0].points + '/50</span>' : '<span aria-label="No player at this rank">—</span>') + '</li>';
+    }).join('');
     const screen = $('completion-stage');
-    screen.classList.toggle('perfect', perfect);
-    screen.innerHTML = '<p class="eyebrow">SIGNRELAY GAMESHOW · FIVE ROUNDS COMPLETE</p><h1>' +
-      (perfect ? 'Perfect game!' : 'Well played!') + '</h1><div class="result-points">' + points +
-      ' <small>/ 50</small></div><p class="description">' + escapeHtml(p.name) + ', collect your lollipop from the host.</p>' +
-      '<div class="result-stats"><span>' + points / 10 + ' correct</span><span>Best streak ' + streaks(p).best +
-      '</span><span>Rank ' + rank + '</span></div><div class="button-row">' + buy('open-players', 'Next player') + '</div>';
+    screen.classList.toggle('perfect', winners[0].points === 50);
+    screen.innerHTML = '<div class="finale-head"><p class="eyebrow">FIVE ROUNDS COMPLETE</p><h1>' +
+      (winners.length > 1 ? 'Shared victory!' : escapeHtml(winners[0].name) + ' wins!') + '</h1>' +
+      (winners[0].points === 50 ? '<p class="finale-perfect">Perfect score · 50/50</p>' : '') + '</div><ol class="podium" aria-label="Podium">' + places +
+      '</ol><ul class="final-standings" aria-label="Final scores and best streaks">' + rows.map(row =>
+        '<li><span><b>' + row.rank + '</b> ' + escapeHtml(row.name) + ' <small>' + playerNumber(row) + '</small></span><strong>' + row.points + '/50</strong><small>Best streak ' + streaks(row).best + '</small></li>').join('') +
+      '</ul>' + buy('new-game', 'New Game');
   }
 }
 
@@ -146,11 +155,13 @@ export function renderHost(state, ui) {
   $('host-round').innerHTML = p ? '<p>' + escapeHtml(p.name) + ' · ' + playerNumber(p) + ' · ' + score(p) + '/50</p>' +
     (r ? '<div class="button-row">' +
       (r.deadline ? button('pause', 'Pause') + button('manual', 'Confirm correct', 'primary') : button('start', r.ready ? 'Resume' : 'Start round')) +
-      button('restart', 'Restart round') + button('skip', 'Skip round') + '</div>' : '') +
-    (p.results.length ? '<details><summary>Correct a score</summary><div class="button-row">' + p.results.map(result =>
-      '<button data-action="correct" data-challenge="' + result.id + '">' + signById[result.sign].word + ' · ' +
-      (successful(result) ? 'set to 0' : 'award 10') + '</button>').join('') + '</div></details>' : '')
-    : '<p>Select a player to manage their round.</p>';
+      button('restart', 'Restart turn') + button('skip', 'Skip challenge') + '</div>' : '') : '';
+  if (state.people.some(person => person.results.length)) {
+    $('host-round').insertAdjacentHTML('beforeend', '<details><summary>Correct a score</summary>' + state.people.filter(person => person.results.length).map(person =>
+      '<p>' + escapeHtml(person.name) + ' · ' + playerNumber(person) + '</p><div class="button-row">' + person.results.map(result =>
+        '<button data-action="correct" data-person="' + person.id + '" data-challenge="' + result.id + '">' + signById[result.sign].word + ' · ' +
+        (successful(result) ? 'set to 0' : 'award 10') + '</button>').join('') + '</div>').join('') + '</details>');
+  }
   const { settings } = state;
   $('sensitivity').value = settings.mode;
   $('custom').value = Math.round(settings.custom * 100);

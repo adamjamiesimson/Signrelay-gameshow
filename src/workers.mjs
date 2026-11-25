@@ -7,6 +7,7 @@ export class WorkerClient {
       if (data.type === 'error') return this.fail(new Error(data.detail));
       const task = this.queue.get(data.id ?? 0);
       if (!task) return;
+      if (data.type === 'overlay') { task.onOverlay?.(data); return; }
       clearTimeout(task.timer);
       this.queue.delete(data.id ?? 0);
       task.resolve(data);
@@ -14,12 +15,12 @@ export class WorkerClient {
     this.worker.onerror = event => this.fail(new Error(event.message || 'Recognition worker stopped.'));
     this.worker.onmessageerror = () => this.fail(new Error('Recognition worker reply could not be read.'));
   }
-  request(type, payload = {}, transfers = []) {
+  request(type, payload = {}, transfers = [], onOverlay) {
     return new Promise((resolve, reject) => {
       if (this.closed) return reject(new Error('Worker is closed.'));
       const id = type === 'init' ? 0 : ++this.sequence;
       const timer = setTimeout(() => this.fail(new Error('Recognition worker timed out.')), type === 'init' ? 45000 : 4500);
-      this.queue.set(id, { resolve, reject, timer });
+      this.queue.set(id, { resolve, reject, timer, onOverlay });
       try {
         this.worker.postMessage({ ...payload, type, id }, transfers);
       } catch (error) {
@@ -39,10 +40,10 @@ export class WorkerClient {
   close() { if (!this.closed) this.fail(new Error('Recognition worker closed.')); }
 }
 
-export function startWorkers() {
+export function startWorkers({ forceCpu = false } = {}) {
   const tracker = new WorkerClient('./tracker.js');
   const classifier = new WorkerClient('./classifier.mjs', { type: 'module' });
-  const ready = Promise.all([tracker.request('init'), classifier.request('init')]);
+  const ready = Promise.all([tracker.request('init', { forceCpu }), classifier.request('init')]);
   return { tracker, classifier, ready, close() { tracker.close(); classifier.close(); } };
 }
 

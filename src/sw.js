@@ -21,6 +21,8 @@ async function install() {
     await cache.put(url, response);
   }
   await cache.put(manifestUrl, new Response(JSON.stringify(RELEASE), { headers: { 'Content-Type': 'application/json' } }));
+  // Leave the current document open. The next navigation can use the fully verified release.
+  await self.skipWaiting();
 }
 
 self.addEventListener('install', event => event.waitUntil(install()));

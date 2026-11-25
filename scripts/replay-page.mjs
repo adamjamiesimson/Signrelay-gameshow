@@ -22,7 +22,7 @@ function event(element, type, action = () => {}) {
   });
 }
 
-globalThis.replay = async ({ file, targets, variant, strategies = ['baseline'], fps: requestedFps }) => {
+globalThis.replay = async ({ file, targets, variant, strategies = ['baseline'], fps: requestedFps, live = false }) => {
   const video = document.createElement('video');
   const history = [];
   const schedules = strategies.map(name => ({ name, timeline: [], last: -Infinity, windows: 0 }));
@@ -31,6 +31,7 @@ globalThis.replay = async ({ file, targets, variant, strategies = ['baseline'], 
   let tracked = 0;
   const start = performance.now();
   const previousClock = clock;
+  const run = live ? String(previousClock) : undefined;
   const transformed = ['mirror', 'dim'].includes(variant);
   try {
     if (file) {
@@ -67,10 +68,10 @@ globalThis.replay = async ({ file, targets, variant, strategies = ['baseline'], 
         bitmap = await createImageBitmap(canvas);
       } else bitmap = await createImageBitmap(video);
       clock = previousClock + n * 1000 / fps * speed;
-      const reply = await workers.tracker.request('frame', { bitmap, timestamp: clock, compact: sparse }, [bitmap]);
+      const reply = await workers.tracker.request('frame', { bitmap, timestamp: clock, compact: sparse, live, run, overlay: false }, [bitmap]);
       frameCount++;
       trackingMs.push(reply.ms);
-      if (reply.hands.length) tracked++;
+      if (reply.handCount) tracked++;
       history.push({ t: clock, f: reply.observation });
       while (history[0]?.t < clock - PROFILE.historyMs) history.shift();
       for (const schedule of schedules) {
@@ -84,7 +85,8 @@ globalThis.replay = async ({ file, targets, variant, strategies = ['baseline'], 
           continue;
         }
         schedule.windows += windows.length;
-        const check = await workers.classifier.request('verify', { windows, targets, timestamp: clock });
+        const check = await workers.classifier.request('verify', live && !baseline ? { history, sparse, targets, timestamp: clock } :
+          { windows, targets, timestamp: clock });
         schedule.timeline.push({ t, values: check.values, cpuMs: check.ms });
       }
     }

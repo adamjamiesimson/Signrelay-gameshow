@@ -1,33 +1,24 @@
-# Booth operations
+# GameShow booth guide
 
-## Prepare the booth laptop
+## Start the offline kiosk
 
-1. Install Node.js 22+ and desktop Chrome before going to the venue. Extract the offline ZIP to a local folder. Open a terminal inside it and run **node scripts/serve.mjs 8787**. Keep the terminal open.
-2. In a regular Chrome profile, open **http://127.0.0.1:8787**. Keep this URL and profile for the entire exhibition. Score data is tied to the browser origin. Avoid guest or incognito windows, storage cleanup and profile changes during the event.
-3. Open **Host controls** using the gear icon or **Alt+H**. Open **Readiness and diagnostics**. Wait for **Model Ready** and **Offline Ready**, then choose **Request durable storage**. A refusal from Chrome does not prevent normal IndexedDB operation. Keep an external JSON backup regardless.
-4. Register a rehearsal nickname, spin and choose **Ready**. Allow the camera when Chrome prompts. Confirm both hands and the upper body are visible, and check the preview under actual booth lighting. Try the external monitor and fullscreen.
-5. Turn off Wi-Fi and unplug Ethernet. Reload the same URL and repeat a challenge and lesson playback. For a service-worker-only check, stop the local server after Offline Ready, reload, and test lesson playback and camera again. Restart the local server before the show to have a second local copy of every asset.
-6. Remove rehearsal players, or use **Host controls → Session and backups → Reset session** and confirm it.
+1. Install Node.js 22 or newer and Chrome on the booth laptop. Extract the full kiosk ZIP to a local folder. Open **Windows PowerShell** in that folder and run `node scripts/serve.mjs 8787`. Leave PowerShell open.
+2. Open the kiosk address in desktop Chrome. If another kiosk is using port 8787, stop its server before starting the new one. Close all previous GameShow tabs. [Offline kiosk](http://127.0.0.1:8787/)
+3. Press **Alt+H** or select the gear. Under **Readiness and diagnostics**, check **Model Ready**, **Offline Ready**, and **Threshold 0.60**. Wait for the build ID shown in the release handoff. Press **Esc** to return to registration. Use the header fullscreen control or **F11** for the booth display.
+4. Disconnect Wi-Fi and Ethernet once during rehearsal. Reload the kiosk and check a lesson, the webcam, and one complete challenge. Reconnect if you need the hosted site. The offline ZIP needs no dependencies or internet after extraction.
 
-When replacing an earlier kiosk, export a JSON backup first. Stop the old server, start the new package on port 8787, and open the same address in the same Chrome profile with access to the local server. If Diagnostics shows the earlier build, reload once, let the update download, close every GameShow tab, and wait a few seconds before reopening the address. Check for build **f7f9531a61d13c30** next to **Offline Ready**. Leave browser site data intact so scores remain available.
+## Start each group
 
-## Run the game
+1. Enter names or nicknames. Leave unused fields blank. Use **Add player field** for larger groups and **Start Game** when ready.
+2. The current player takes the camera position, spins, watches the demonstration, and selects **Ready**. The 20-second clock starts after the webcam and workers are ready. Select **Next Player** after the result to hand off the laptop. The next person chooses when to start their challenge.
+3. After everyone has played five turns, select **See final results**. The podium stays visible until **New Game**. Use **New Game** for the next group. Refreshing or closing the tab clears names, scores and progress.
 
-1. Select **Join the game** or **Switch player**. Add a nickname or search by name or player ID. Share the numeric ID with participants who use the same nickname.
-2. Spin the wheel. Give the player time to watch and replay the short sign demonstration. **Ready** starts the 20-second round after the camera and models are ready. Participants can retry freely before the clock expires.
-3. Use **Alt+H** or the gear to pause or resume. **Confirm correct** records an observed correct sign as a manual award. **Restart round** restarts the same sign with 20 seconds. **Skip round** returns it to the pool and keeps the round available. A camera failure pauses the attempt and triggers one automatic recovery.
-4. If camera recognition is unusable, use **Host judging only** and show the participant the same local lesson. A host who can assess the sign can award 10 points with **Confirm correct** during the round. Keep automatic and manual trial counts distinct when evaluating the verifier.
-5. Use **Full leaderboard** to show all scores and the fullscreen button in that view for audience display. Press Escape and close the view to return to the game. The gear also offers attract mode. Returning participants can reclaim unfinished rounds by selecting their original player ID.
-6. Export JSON backups regularly to a second location. CSV is for viewing scores. Restore from JSON only when replacing the current session is intentional. Keep a separate copy of the most recent backup before any restore or reset.
+## Host recovery
 
-Use one operator tab. A second tab can follow the leaderboard and refresh from IndexedDB. Close the original operator tab and reload the secondary tab to transfer controls. If Chrome loses a live tab unexpectedly, reopen the same URL and profile. The unfinished sign remains selected and can be restarted.
+- Open the gear or press **Alt+H**. **Pause** stops the timer and camera. **Resume** continues the current turn. **Restart turn** returns to its demonstration with 20 seconds. **Skip challenge** lets the same player spin again.
+- Use **Confirm correct** only after seeing a genuinely correct target sign. **Correct a score** lets you update an earlier result for any player. **Restart game** keeps the roster and clears its scores. **Export current scores** saves a CSV only when requested.
+- If the camera disconnects, reconnect it and check the camera selector. Try **Retry camera and models**. If necessary, enable **Host judging only** and judge each sign during its timed challenge. Keep **Relaxed 0.60** for automatic recognition unless the host has a specific reason to adjust it.
 
-## 20-minute live-webcam rehearsal
+## Live rehearsal
 
-1. **Set up, 3 minutes.** One person hosts while the other signs. Use the exhibition laptop, camera, external display and booth lighting. Open the offline kiosk and wait for both readiness indicators. Keep **Relaxed 0.60** and frame the face, upper chest and both hands. In the host diagnostics, check the analyzed frame rate while someone signs. Aim for at least 8 analyzed frames per second and close other heavy apps if it stays lower.
-2. **Play both roles, 8 minutes.** Create two rehearsal players with the same nickname. Take turns through five signs each, then swap host duties. Let each player watch the local clip before starting. Attempt a slow but natural version, an imperfect version, and a relaxed right- or left-handed version. Ask a fluent signer to check all ten demonstrations and their notes, including signs the wheel did not draw.
-3. **Check false awards and fallback, 4 minutes.** During timed rounds, try a different sign, idle hands and a normal reach. Confirm the score stays unchanged. Pause, switch to the other ID, and return to confirm the remaining time. Disconnect and reconnect the camera. Verify that the round can resume. Have the host award a genuinely correct missed sign once and use **Skip round** on a deliberately interrupted attempt.
-4. **Test offline and backups, 5 minutes.** Export JSON and CSV. Disable the laptop’s network and reload the exact kiosk URL. Check lesson playback, the live camera, score persistence, another completed round, and fullscreen. Restore the JSON only in this rehearsal session and verify the two IDs and scores. Re-enable the network afterward if needed and remove the rehearsal players before visitors arrive.
-
-For each live trial, note the sign, approximate analyzed FPS, automatic/manual/timeout result, and any false award or camera problem. Use this log to set the host fallback before opening. For longer validation, leave this setup running across the planned exhibition window with periodic rounds and JSON exports. The automated camera tests used prerecorded input.
-
+Use the booth laptop, webcam, screen and lighting. Have two people play all ten turns, then swap host duties. Try slower and left-handed performances, idle hands, and a wrong sign. Note automatic recognition, host awards, timeouts and any false awards separately. Open diagnostics during a turn and note frame rate and overlay age. Disconnect and reconnect the webcam once. Test a manual award, score correction, and the offline reload before opening. Leave the kiosk running with periodic rounds for a longer soak if setup time permits.

@@ -18,12 +18,21 @@ try {
   const close = () => click('Close host controls');
   const cameraActive = () => page.waitForFunction(() => document.querySelector('#camera').srcObject?.active);
   await page.goto(url);
-  await click('Join the game');
-  await page.locator('#name').fill('Lifecycle check');
-  await click('Add player');
+  await page.locator('#roster input').first().fill('Lifecycle check');
+  await click('Start Game');
   await page.locator('#wheel-copy button[data-action=spin]').click();
   await click('Ready');
   await cameraActive();
+  const lostTrack = await page.locator('#camera').evaluate(video => {
+    const track = video.srcObject.getVideoTracks()[0];
+    track.stop();
+    return track.id;
+  });
+  await page.waitForFunction(id => {
+    const track = document.querySelector('#camera').srcObject?.getVideoTracks()[0];
+    return track?.readyState === 'live' && track.id !== id;
+  }, lostTrack);
+  console.log('PASS stopped camera track recovered automatically in the current turn');
   const memory = () => page.evaluate(() => performance.memory?.usedJSHeapSize ?? null);
   const first = await memory();
   const began = performance.now();
@@ -37,8 +46,8 @@ try {
     assert.equal(await page.locator('#camera').evaluate(video => video.srcObject.getVideoTracks().length), 1);
     if ((i + 1) % 6 === 0) {
       await host();
-      await click('Restart round');
-      await page.locator('#confirm').getByRole('button', { name: 'Restart round', exact: true }).click();
+      await click('Restart turn');
+      await page.locator('#confirm').getByRole('button', { name: 'Restart turn', exact: true }).click();
       await close();
       await click('Ready');
       await cameraActive();

@@ -1,5 +1,5 @@
 import { startWorkers } from './workers.mjs';
-import { Confirmation, PROFILE, verificationInterval, verificationWindows } from './verification.mjs';
+import { Confirmation, PROFILE, verificationInterval } from './verification.mjs';
 
 const links = [[0,1],[1,2],[2,3],[3,4],[0,5],[5,6],[6,7],[7,8],[5,9],[9,10],[10,11],[11,12],
   [9,13],[13,14],[14,15],[15,16],[13,17],[17,18],[18,19],[19,20],[17,0]];
@@ -45,24 +45,31 @@ export class Camera {
   }
 
   warm() {
-    if (this.workers) return this.workers.ready;
+    if (this.workers) return this.ready;
     this.model = 'Loading hand, pose and sign models…';
     this.notify('model', this.model);
     try {
-      this.workers = startWorkers();
+      this.workers = startWorkers({ forceCpu: this.forceCpu });
       const current = this.workers;
-      current.ready.then(() => {
+      this.ready = current.ready.then(([tracker]) => {
         if (this.workers !== current) return;
         this.model = 'Ready';
-        this.notify('model', 'Hand, pose and ASL models ready');
+        this.delegate = tracker.delegate;
+        this.notify('model', 'Hand and pose ready on ' + tracker.delegate + ' · ASL model ready');
       }, error => {
-        if (this.workers !== current) return;
+        if (this.workers !== current) throw error;
         current.close();
         this.workers = null;
+        if (!this.forceCpu) {
+          this.forceCpu = true;
+          this.notify('model', 'Retrying model startup with CPU tracking');
+          return this.warm();
+        }
         this.model = 'Error · ' + error.message;
         this.notify('model', this.model);
+        throw error;
       });
-      return current.ready;
+      return this.ready;
     } catch (error) {
       this.model = 'Error · ' + error.message;
       this.notify('model', this.model);
@@ -116,7 +123,8 @@ export class Camera {
   play(run, word, threshold) {
     this.stopAnalysis();
     this.resetSignal();
-    const attempt = { run, word, threshold, lastVideo: performance.now(), lastSample: -Infinity, latest: -Infinity, mediaTime: -1, cadence: [] };
+    const attempt = { run, word, threshold, lastVideo: performance.now(), lastSample: -Infinity,
+      lastRecognition: -Infinity, latest: -Infinity, mediaTime: -1, cadence: [] };
     this.attempt = attempt;
     this.videoFrame(attempt);
     this.watchdog = setInterval(() => {
@@ -147,18 +155,27 @@ export class Camera {
 
   async capture(attempt) {
     if (this.frameBusy || !attempt || this.attempt !== attempt ||
-        !Number.isFinite(attempt.latest) || attempt.latest - attempt.lastSample < PROFILE.sampleMs) return;
+        !Number.isFinite(attempt.latest) || attempt.latest - attempt.lastSample < 22) return;
     const timestamp = attempt.latest;
     attempt.lastSample = timestamp;
     this.frameBusy = true;
+    let bitmap;
     try {
-      const bitmap = await createImageBitmap(this.video);
+      const started = performance.now();
+      if (!this.forceBitmap && typeof VideoFrame === 'function') {
+        try { bitmap = new VideoFrame(this.video, { timestamp: Math.round(timestamp * 1000) }); } catch {}
+      }
+      bitmap ??= await createImageBitmap(this.video);
       if (this.attempt !== attempt) { bitmap.close(); return; }
+      const sent = performance.now();
       const data = await this.workers.tracker.request('frame', {
-        bitmap, timestamp, compact: attempt.compact, overlay: this.settings().overlay,
-      }, [bitmap]);
-      if (this.attempt === attempt) this.analyze(attempt, data);
+        bitmap, timestamp, compact: attempt.compact, overlay: this.settings().overlay, live: true, run: attempt.run,
+      }, [bitmap], overlay => {
+        if (this.attempt === attempt) this.paintOverlay(overlay.xy, overlay.timestamp);
+      });
+      if (this.attempt === attempt) this.analyze(attempt, data, sent - started, performance.now() - sent - data.ms);
     } catch (error) {
+      bitmap?.close();
       if (this.attempt === attempt) this.fault(error.message, true);
     } finally {
       this.frameBusy = false;
@@ -166,38 +183,38 @@ export class Camera {
     }
   }
 
-  analyze(attempt, data) {
+  analyze(attempt, data, captureMs, transportMs) {
+    this.notify('hands', { count: data.handCount, ms: data.ms, fps: attempt.fps, handMs: data.handMs,
+      poseMs: data.poseMs, captureMs, transportMs, overlayMs: this.overlayLag });
+    // A fast preview may deliver 30 fps. The verifier keeps the trained 15 Hz cadence.
+    if (data.timestamp - attempt.lastRecognition < PROFILE.sampleMs - 8) return;
+    attempt.lastRecognition = data.timestamp;
     attempt.cadence.push(data.timestamp);
     while (attempt.cadence[0] < data.timestamp - 2200) attempt.cadence.shift();
     const span = data.timestamp - attempt.cadence[0];
     const fps = span > 300 ? (attempt.cadence.length - 1) * 1000 / span : null;
-    this.notify('hands', { count: data.handCount, ms: data.ms, fps: fps === null ? null : Math.round(fps) });
+    attempt.fps = fps === null ? null : Math.round(fps);
     attempt.sparse = fps !== null && fps < PROFILE.sparseFps;
     if (attempt.cadence.length >= 4 && fps !== null && fps < 7) attempt.compact = true;
     if (data.timestamp - (this.history.at(-1)?.t ?? data.timestamp) > PROFILE.sparseGap) this.resetSignal();
     this.history.push({ t: data.timestamp, f: data.observation });
     while (this.history[0]?.t < data.timestamp - PROFILE.historyMs) this.history.shift();
     this.verifyLatest(attempt);
-    this.paintOverlay(data.hands);
   }
 
   verifyLatest(attempt) {
     const sample = this.history.at(-1);
     if (!attempt || !sample || this.verifying ||
         sample.t - this.lastAnalysis < verificationInterval(attempt.sparse)) return;
-    const windows = verificationWindows(this.history, attempt.sparse);
     this.lastAnalysis = sample.t;
-    if (!windows.length) {
-      this.signal.reset();
-      this.notify('evidence', { score: 0, p: 0, cosine: 0, unknown: 0, ms: 0 });
-      return;
-    }
     this.verifying = true;
     const cutoff = attempt.threshold;
-    this.workers.classifier.request('verify', { timestamp: sample.t, targets: [attempt.word], windows, stopAbove: cutoff }).then(reply => {
+    this.workers.classifier.request('verify', { timestamp: sample.t, targets: [attempt.word],
+      history: this.history, sparse: attempt.sparse, stopAbove: cutoff }).then(reply => {
       if (this.attempt !== attempt || performance.now() - reply.timestamp > 1200 || cutoff !== attempt.threshold) return;
       const [evidence] = reply.values;
       this.notify('evidence', { ...evidence, ms: reply.ms, windows: reply.windowsRun });
+      if (reply.empty) { this.signal.reset(); return; }
       if (this.signal.push(evidence.score, reply.timestamp, cutoff)) this.notify('match', attempt.run);
     }).catch(error => {
       if (this.attempt === attempt) this.fault(error.message, true);
@@ -207,11 +224,13 @@ export class Camera {
     });
   }
 
-  paintOverlay(hands) {
+  paintOverlay(hands, timestamp) {
     this.overlayHands = hands;
+    this.overlayTimestamp = timestamp;
     if (this.overlayFrame !== undefined || (!hands.length && !this.overlayPainted)) return;
     this.overlayFrame = requestAnimationFrame(() => {
       this.overlayFrame = undefined;
+      this.overlayLag = performance.now() - this.overlayTimestamp;
       this.draw(this.overlayHands);
     });
   }
@@ -235,31 +254,36 @@ export class Camera {
     const frameH = this.video.videoHeight * ratio;
     const left = (w - frameW) / 2;
     const top = (h - frameH) / 2;
-    const location = point => [left + (1 - point.x) * frameW, top + point.y * frameH];
     context.strokeStyle = '#bcffc6';
     context.lineWidth = 2.2 * deviceScale;
     context.lineCap = 'round';
     context.fillStyle = '#e6ffe9';
     this.overlayPainted = true;
-    for (const hand of hands) {
+    context.beginPath();
+    for (let offset = 0; offset < hands.length; offset += 42) {
       for (const [a, b] of links) {
-        context.beginPath();
-        context.moveTo(...location(hand[a]));
-        context.lineTo(...location(hand[b]));
-        context.stroke();
-      }
-      for (const point of hand) {
-        context.beginPath();
-        context.arc(...location(point), 2.6 * deviceScale, 0, 2 * Math.PI);
-        context.fill();
+        context.moveTo(left + (1 - hands[offset + a * 2]) * frameW, top + hands[offset + a * 2 + 1] * frameH);
+        context.lineTo(left + (1 - hands[offset + b * 2]) * frameW, top + hands[offset + b * 2 + 1] * frameH);
       }
     }
+    context.stroke();
+    context.beginPath();
+    const radius = 2.6 * deviceScale;
+    for (let i = 0; i < hands.length; i += 2) {
+      const x = left + (1 - hands[i]) * frameW;
+      const y = top + hands[i + 1] * frameH;
+      context.moveTo(x + radius, y);
+      context.arc(x, y, radius, 0, 2 * Math.PI);
+    }
+    context.fill();
   }
 
   fault(message, workers = false) {
     this.stopCamera();
     this.status = message;
     if (workers) {
+      this.forceCpu = true;
+      this.forceBitmap = true;
       this.workers?.close();
       this.workers = null;
       this.model = 'Recovering';
@@ -275,6 +299,7 @@ export class Camera {
     cancelAnimationFrame(this.overlayFrame);
     this.overlayFrame = undefined;
     this.overlayHands = [];
+    this.overlayLag = undefined;
     if (this.overlayPainted) this.draw([]);
     this.resetSignal();
   }

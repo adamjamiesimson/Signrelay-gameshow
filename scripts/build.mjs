@@ -52,9 +52,9 @@ async function collect(folder, prefix = '') {
   return items;
 }
 const assets = await collect(out);
-const version = digest(JSON.stringify(assets)).slice(0, 16);
-const manifest = { version, assets };
 const sw = await readFile(resolve(root, 'src/sw.js'), 'utf8');
+const version = digest(JSON.stringify(assets) + '\n' + sw).slice(0, 16);
+const manifest = { version, assets };
 await writeFile(resolve(out, 'sw.js'), 'const RELEASE = ' + JSON.stringify(manifest) + ';\n' + sw);
 await writeFile(resolve(out, 'runtime.json'), JSON.stringify(manifest, null, 2));
 console.log('GameShow ' + version + ' · ' + assets.length + ' offline assets · ' +

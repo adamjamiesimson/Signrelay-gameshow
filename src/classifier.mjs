@@ -1,6 +1,6 @@
 import * as ort from 'onnxruntime-web/wasm';
 import { prepareClip, N_POINTS, TMAX } from './upstream-preprocess.mjs';
-import { targetEvidence } from './verification.mjs';
+import { targetEvidence, verificationWindows } from './verification.mjs';
 
 let session;
 let metadata;
@@ -65,8 +65,11 @@ self.onmessage = async ({ data }) => {
       self.postMessage({ type: 'ready' });
     } else if (data.type === 'verify') {
       const start = performance.now();
-      const result = await verify(data);
-      self.postMessage({ type: 'verified', id: data.id, timestamp: data.timestamp, ...result, ms: Math.round(performance.now() - start) });
+      const windows = data.history ? verificationWindows(data.history, data.sparse) : data.windows;
+      const prepared = performance.now();
+      const result = await verify({ ...data, windows });
+      self.postMessage({ type: 'verified', id: data.id, timestamp: data.timestamp, ...result, empty: !windows.length,
+        prepareMs: prepared - start, ms: Math.round(performance.now() - prepared) });
     }
   } catch (error) {
     self.postMessage({ type: 'error', detail: error.message || String(error) });

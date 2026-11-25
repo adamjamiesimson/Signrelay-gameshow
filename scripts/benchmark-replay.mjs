@@ -8,6 +8,7 @@ import { signIds } from '../src/signs.mjs';
 import { Confirmation } from '../src/verification.mjs';
 
 const [manifest, output, split = 'val', rate = '5', choicesFile] = process.argv.slice(2);
+const live = process.env.GAMESHOW_LIVE_REPLAY === '1';
 if (!manifest || !output || !['val', 'test', 'scramble'].includes(split)) {
   throw new Error('Usage: node scripts/benchmark-replay.mjs <manifest.json> <output.json> <val|test|scramble> [fps] [thresholds.json]');
 }
@@ -51,7 +52,7 @@ try {
     try {
       const variant = !row.file ? 'synthetic-empty' : split === 'scramble' ? 'scrambled' : 'original';
       const data = await page.evaluate(input => globalThis.replay(input),
-        { file: row.file, targets: signIds, variant, strategies: names, fps });
+        { file: row.file, targets: signIds, variant, strategies: names, fps, live });
       const modes = {};
       for (const schedule of data.schedules) {
         const values = Object.fromEntries(signIds.map((id, i) =>

@@ -161,3 +161,32 @@ dialog label{font-weight:600;color:var(--muted)}
 @media(max-height:730px) and (min-width:761px){.masthead{height:63px;margin-bottom:15px}.foot{min-height:46px}.wheel-frame{max-width:content;width:min(100%,calc(100svh - 190px))}.board-head,.player-card{padding-block:12px}}
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.001s!important;transition-duration:.001s!important;scroll-behavior:auto!important}}
 
+body[data-stage="registration"] .layout{grid-template-columns:1fr}
+.registration{display:grid;grid-template-columns:minmax(0,1fr) minmax(250px,.9fr);align-items:center;gap:clamp(20px,5vw,80px);padding:clamp(20px,5.5vw,82px);background:radial-gradient(ellipse at 14% 14%,#21402b 0%,transparent 66%),var(--panel)}
+.registration h1{font:400 clamp(3.5rem,8vw,7.6rem)/.94 var(--serif);letter-spacing:-.07em;margin:0 0 22px}
+.registration-intro .description{max-width:33ch}
+.registration form{padding:clamp(15px,3vw,30px);background:#102017;border:1px solid #344a39;border-radius:15px}
+.roster{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin-bottom:18px}
+.roster-field{min-width:0;display:grid;gap:4px}
+.roster-field label{display:grid;gap:5px;font-weight:650}
+.roster-field input{width:100%;min-width:0}
+.roster-field button{justify-self:end;min-height:34px;padding:4px 8px;font-size:.75rem;border-color:transparent;background:transparent;color:var(--muted)}
+#roster-error{color:var(--gold);margin-bottom:12px}
+.wheel-copy h1{overflow-wrap:anywhere}
+.wheel-copy h1 em{display:block}
+.completion{display:grid;gap:16px;align-content:center;padding:clamp(17px,3vw,44px)}
+.completion h1{font-size:clamp(2.35rem,5.5vw,5rem);overflow-wrap:anywhere;margin:3px 0 0}
+.completion>.primary{justify-self:center}
+.finale-perfect{color:var(--gold);font-weight:750;margin-top:6px}
+.podium{list-style:none;margin:0;padding:0;display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:9px;align-items:end;width:100%}
+.podium-place{display:grid;gap:4px;align-content:center;min-height:82px;padding:8px 5px;border:1px solid var(--line);border-radius:12px;background:#172a1c;overflow-wrap:anywhere}
+.podium-place>span:first-child{font:1.7rem var(--serif);color:var(--green)}
+.podium-place small,.final-standings small{color:var(--muted);font-size:.78rem}
+.podium .place-1{min-height:116px;border-color:#8d7041;background:#322c1b}
+.podium .place-1>span:first-child{color:var(--gold)}
+.podium .place-2{min-height:98px}
+.final-standings{width:100%;padding:0;margin:0;list-style:none;max-height:180px;overflow:auto;text-align:left}
+.final-standings li{display:grid;grid-template-columns:minmax(0,1fr) 56px max-content;gap:8px;padding:6px;border-bottom:1px solid var(--line);align-items:center}
+.final-standings li>span{overflow-wrap:anywhere}
+@media(max-width:760px){.registration{grid-template-columns:1fr;gap:16px}.registration h1{font-size:clamp(3rem,12vw,5.7rem);margin-bottom:8px}}
+

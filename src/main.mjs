@@ -1,24 +1,23 @@
 import { Camera } from './camera.mjs';
-import { csv, initial, leaderboard, MAX_ROUNDS, player, ROUND_MS, score, streaks, successful, timeLeft, validateBackup } from './game.mjs';
+import { csv, leaderboard, MAX_ROUNDS, player, ROUND_MS, score, streaks, successful, timeLeft } from './game.mjs';
 import { icon } from './icons.mjs';
 import { checkOffline } from './offline.mjs';
 import { SIGNS, signIds, signById } from './signs.mjs';
 import { Audio, confetti, Wheel } from './spectacle.mjs';
-import { openStore } from './store.mjs';
-import { $, escapeHtml, renderBoard, renderHost, renderPeople, renderStage, setupIcons, threshold } from './view.mjs';
+import { newParty, partyAction, turnResult } from './party.mjs';
+import { $, escapeHtml, renderBoard, renderHost, renderStage, setupIcons, threshold } from './view.mjs';
 
-let state = initial();
-let store;
-let operator = false;
+const settingsKey = 'signrelay-gameshow-settings';
+const loadSettings = () => {
+  try { return JSON.parse(localStorage.getItem(settingsKey)); } catch { return undefined; }
+};
+let state = newParty(loadSettings());
 let myRun;
-let starting = false;
+let starting;
 let spin;
-let resultView;
 let problem = '';
 let finishing = false;
 let toastTimer;
-let renameId;
-let idle = false;
 let offline = 'Checking cache…';
 let devices = [];
 let observedHands = -1;
@@ -26,6 +25,7 @@ let tracking;
 let evidence;
 let challengeTick;
 let nextTone;
+let nextDiagnostics = 0;
 let recoveryKey;
 let recoveryInProgress = false;
 const logs = [];
@@ -53,15 +53,20 @@ function diagnostics() {
   if (!$('host').open) return;
   const stats = evidence ? '\nTarget evidence ' + evidence.score.toFixed(3) + ' · p ' + evidence.p.toFixed(3) +
     ' · cosine ' + evidence.cosine.toFixed(3) + ' · unknown ' + evidence.unknown.toFixed(3) + ' · ' + evidence.ms + ' ms' : '';
-  const cadence = tracking?.fps ? '\nTracking  ' + tracking.fps + ' analyzed frames/s · ' + tracking.ms + ' ms latest' : '';
-  say($('diagnostics'), 'Model  ' + camera.model + '\nCamera  ' + camera.status + '\nOffline  ' + offline +
+  const ms = value => Number.isFinite(value) ? Math.max(0, Math.round(value)) + ' ms' : '—';
+  const cadence = tracking?.fps ? '\nTracking  ' + tracking.fps + ' analyzed frames/s · ' + tracking.ms + ' ms latest' +
+    '\nHand ' + ms(tracking.handMs) + ' · pose ' + ms(tracking.poseMs) + ' · capture ' + ms(tracking.captureMs) +
+    ' · transfer ' + ms(tracking.transportMs) + ' · overlay age ' + ms(tracking.overlayMs) : '';
+  say($('diagnostics'), 'Model  ' + camera.model + (camera.model === 'Ready' ? ' · ' + camera.delegate + ' tracking' : '') +
+    '\nCamera  ' + camera.status + '\nOffline  ' + offline +
     '\nThreshold  ' + threshold(state.settings).toFixed(2) + stats + cadence + '\n\n' + logs.slice(-12).reverse().join('\n'));
 }
 
 function kind(p) {
-  if (!p || spin) return 'wheel';
-  if (p.results.length === MAX_ROUNDS) return 'completion';
-  if (resultView?.personId === p.id && !p.pending) return 'result';
+  if (state.complete) return 'completion';
+  if (!p) return 'registration';
+  if (spin) return 'wheel';
+  if (turnResult(state)) return 'result';
   if (p.pending) return p.pending.ready ? 'challenge' : 'teaching';
   return 'wheel';
 }
@@ -69,20 +74,15 @@ function render() {
   const p = active();
   const stage = kind(p);
   const before = document.body.dataset.stage;
-  const ui = { spinning: !!spin, starting, problem, operator, result: resultView?.result, devices };
+  const ui = { spinning: !!spin, starting, problem, result: turnResult(state), devices };
   renderStage(stage, p, state, ui);
-  const heading = $('wheel-copy').querySelector('h1');
-  if (heading) heading.id = 'wheel-title';
   $('wheel').setAttribute('aria-label', 'Wheel: ' + SIGNS.map(s => s.word).join(', '));
   wheel.setUsed(p?.results.map(r => r.sign) ?? []);
-  if (stage === 'wheel' && !p && !idle) { idle = true; wheel.idle(); }
-  if ((stage !== 'wheel' || p) && idle) { idle = false; wheel.stop(); }
   const muteButton = document.querySelector('[data-action="mute"]');
   muteButton.innerHTML = icon(state.settings.muted ? 'mute' : 'sound');
   muteButton.setAttribute('aria-label', state.settings.muted ? 'Unmute sound' : 'Mute sound');
   muteButton.title = muteButton.getAttribute('aria-label');
   muteButton.setAttribute('aria-pressed', String(state.settings.muted));
-  if ($('players').open) renderPeople(state);
   if ($('host').open) renderHost(state, ui);
   diagnostics();
   if (stage === 'challenge') drawClock();
@@ -92,8 +92,7 @@ function render() {
   }
 }
 
-function sync(newState) {
-  if (newState.revision < state.revision) return;
+function sync(newState, updateBoard) {
   const old = active();
   state = newState;
   const p = active();
@@ -103,10 +102,8 @@ function sync(newState) {
     evidence = undefined;
   }
   if (spin && (spin.personId !== p?.id || spin.challengeId !== p?.pending?.id)) {
-    // A newly bound spin has not reached the database yet.
     if (!spin.saving || spin.personId !== p?.id) { wheel.stop(); spin = null; }
   }
-  if (resultView?.personId !== p?.id) resultView = null;
   if (myRun && p?.pending?.run !== myRun) {
     camera.stopCamera();
     myRun = null;
@@ -115,29 +112,22 @@ function sync(newState) {
     evidence = undefined;
   }
   if (old?.id !== p?.id) {
-    starting = false;
+    starting = undefined;
     problem = '';
     camera.stopCamera();
   }
-  renderBoard(state);
+  if (updateBoard) renderBoard(state);
   render();
 }
 
-async function dispatch(action) {
-  if (!operator) {
-    toast('GameShow controls are active in another tab. Close that tab and reload here.');
-    return false;
+function dispatch(action) {
+  const next = partyAction(state, action, signIds);
+  if (next === state) return false;
+  if (action.type === 'settings') {
+    try { localStorage.setItem(settingsKey, JSON.stringify(next.settings)); } catch {}
   }
-  if (!store) { toast('Game storage is unavailable. Reload to retry.'); return false; }
-  try {
-    const response = await store.dispatch({ ...action, now: action.now ?? Date.now() });
-    sync(response.state);
-    return response.changed;
-  } catch (error) {
-    log('Storage: ' + error.message);
-    toast('Could not save. The last saved score is still shown.');
-    return false;
-  }
+  sync(next, ['start-game', 'restart-game', 'new-game', 'advance', 'result', 'pause', 'correct'].includes(action.type));
+  return true;
 }
 
 function drawClock() {
@@ -153,7 +143,7 @@ function drawClock() {
     say($('feedback'), problem ? 'The host can retry or switch to host judging.' : 'Ready to pick up where you left off?');
     return;
   }
-  if (myRun !== round.run || !operator) return;
+  if (myRun !== round.run) return;
   if (seconds && seconds <= 5 && seconds !== nextTone) { nextTone = seconds; audio.play('final'); }
   if (remaining <= 0 && !finishing) void settle('timeout', myRun);
   const feedback = state.settings.manual ? 'Sign for your host before time runs out.' :
@@ -175,6 +165,11 @@ function cameraEvent(type, value) {
   if (type === 'fault') { void recoverCamera(value); return; }
   if (type === 'hands') { tracking = value; observedHands = value.count; }
   if (type === 'evidence') evidence = value;
+  if (type === 'hands' || type === 'evidence') {
+    const now = performance.now();
+    if (now < nextDiagnostics) return;
+    nextDiagnostics = now + 250;
+  }
   if (type === 'model' || type === 'camera') log(value);
   diagnostics();
 }
@@ -192,8 +187,9 @@ async function refreshOffline() {
 }
 async function beginRound() {
   const p = active();
-  if (starting || !p?.pending || p.pending.deadline || !operator) return;
-  starting = true;
+  if (starting || !p?.pending || p.pending.deadline) return;
+  const request = {};
+  starting = request;
   problem = '';
   const key = attemptKey(p);
   const run = uid();
@@ -207,11 +203,11 @@ async function beginRound() {
       if (!result[1].value) return;
     }
     const current = active();
-    if (current?.id !== key.personId || current?.pending?.id !== key.challengeId ||
+    if (starting !== request || current?.id !== key.personId || current?.pending?.id !== key.challengeId ||
         state.settings.manual !== manual || state.settings.camera !== device) return;
     myRun = run;
-    starting = false;
-    const committed = await dispatch({ ...key, type: 'start', run });
+    starting = undefined;
+    const committed = dispatch({ ...key, type: 'start', run });
     if (!committed) { myRun = null; camera.stopCamera(); return; }
     if (!manual) camera.play(run, current.pending.sign, threshold(state.settings));
     audio.play('start');
@@ -224,8 +220,7 @@ async function beginRound() {
       log(problem);
     }
   } finally {
-    starting = false;
-    render();
+    if (starting === request) { starting = undefined; render(); }
   }
 }
 async function recoverCamera({ message, workers }) {
@@ -249,6 +244,7 @@ async function leaveRun(type) {
   const p = active();
   if (!p?.pending) return;
   const key = attemptKey(p);
+  starting = undefined;
   problem = '';
   camera.stopCamera();
   await dispatch({ type, ...key });
@@ -259,29 +255,15 @@ async function settle(method, run) {
   const now = Date.now();
   if (method !== 'timeout' && now >= p.pending.deadline) return;
   finishing = true;
-  const pending = p.pending;
-  const priorScore = score(p);
-  const changed = await dispatch({ ...attemptKey(p), type: 'result', method, now });
+  const changed = dispatch({ ...attemptKey(p), type: 'result', method, now });
   finishing = false;
   const current = active();
   if (!changed || p.id !== current?.id) return;
-  const result = current.results.find(item => item.id === pending.id);
-  resultView = { personId: p.id, result };
+  const result = turnResult(state);
   problem = '';
   render();
   const correct = successful(result);
   if (correct) {
-    const scoreText = $('player-card').querySelector('.board-score');
-    if (scoreText && !matchMedia('(prefers-reduced-motion: reduce)').matches) {
-      const began = performance.now();
-      const grow = now => {
-        if (!scoreText.isConnected) return;
-        const t = Math.min(1, (now - began) / 470);
-        scoreText.firstChild.nodeValue = String(Math.round(priorScore + (score(current) - priorScore) * t));
-        if (t < 1) requestAnimationFrame(grow);
-      };
-      requestAnimationFrame(grow);
-    }
     const streak = streaks(current).current;
     const perfect = score(current) === 50;
     audio.play(perfect ? 'perfect' : streak >= 3 ? 'streak' : 'win');
@@ -290,7 +272,7 @@ async function settle(method, run) {
 }
 async function roll() {
   const p = active();
-  if (!operator || spin || !p || p.pending || p.results.length >= MAX_ROUNDS) return;
+  if (spin || !p || p.pending || turnResult(state) || p.results.length >= MAX_ROUNDS) return;
   const options = SIGNS.filter(sign => !p.results.some(result => result.sign === sign.id));
   const sign = options[Math.floor(Math.random() * options.length)].id;
   const revision = { personId: p.id, challengeId: uid(), saving: true };
@@ -323,28 +305,58 @@ function confirmChange(message, label, callback) {
   }, { once: true });
   show('confirm');
 }
-function findPeople() {
-  close('host');
-  show('players');
-  renderPeople(state);
-  $('name').focus();
-}
 function fileDownload(name, data, type) {
   const url = URL.createObjectURL(new Blob([data], { type }));
   const link = Object.assign(document.createElement('a'), { href: url, download: name });
   link.click();
   setTimeout(() => URL.revokeObjectURL(url), 2000);
 }
-function closePlayerPanel() {
-  close('players');
-  if (document.body.dataset.stage === 'teaching') $('lesson-video').play().catch(() => {});
+function nameField() {
+  const row = document.createElement('div');
+  row.className = 'roster-field';
+  row.innerHTML = '<label><span></span><input name="player" maxlength="36" autocomplete="off"></label><button type="button" data-action="remove-player">Remove</button>';
+  $('roster').append(row);
+  labelRoster();
+  return row.querySelector('input');
+}
+function labelRoster() {
+  [...$('roster').children].forEach((row, i) => {
+    row.querySelector('label span').textContent = 'Player ' + (i + 1);
+    row.querySelector('button').setAttribute('aria-label', 'Remove player ' + (i + 1));
+  });
+}
+function resetRoster() {
+  $('roster').replaceChildren();
+  for (let i = 0; i < 4; i++) nameField();
+  $('roster-error').hidden = true;
+}
+function resetPlay(type) {
+  if (spin) { wheel.stop(); spin = null; }
+  starting = undefined;
+  problem = '';
+  camera.stopCamera();
+  if (type === 'new-game') resetRoster();
+  dispatch({ type });
 }
 
 const actions = {
   spin: roll,
   start: beginRound,
-  next() { resultView = null; render(); },
-  'open-players': findPeople,
+  next() {
+    if (dispatch({ type: 'advance', turn: state.turn }) && state.complete) {
+      audio.play('perfect');
+      confetti($('confetti'), 3);
+    }
+  },
+  'new-game': () => resetPlay('new-game'),
+  'add-player': () => nameField().focus(),
+  'remove-player'(button) {
+    const row = button.closest('.roster-field');
+    const neighbour = row.nextElementSibling ?? row.previousElementSibling;
+    row.remove();
+    if (neighbour) { labelRoster(); neighbour.querySelector('input').focus(); }
+    else nameField().focus();
+  },
   async host() {
     show('host');
     render();
@@ -376,53 +388,26 @@ const actions = {
       else await document.documentElement.requestFullscreen();
     } catch { toast('This browser could not enter fullscreen. Use its fullscreen menu.'); }
   },
-  async attract() {
-    if (spin) { wheel.stop(); spin = null; }
-    resultView = null;
-    close('host');
-    await dispatch({ type: 'attract' });
-  },
-  async select(control) {
-    if (!operator) { toast('Select players in the active host tab.'); return; }
-    await dispatch({ type: 'select', personId: control.dataset.person });
-    closePlayerPanel();
-  },
-  rename(control) {
-    const p = state.people.find(person => person.id === control.dataset.person);
-    if (!p) return;
-    renameId = p.id;
-    $('new-name').value = p.name;
-    show('rename');
-    $('new-name').select();
-  },
-  remove(control) {
-    const p = state.people.find(person => person.id === control.dataset.person);
-    if (p) confirmChange('Remove ' + p.name + ' and their scores?', 'Remove player',
-      () => dispatch({ type: 'remove', personId: p.id }));
-  },
   pause: () => leaveRun('pause'),
   manual() {
     const p = active();
     if (p?.pending?.deadline) void settle('manual', p.pending.run);
   },
   restart() {
-    confirmChange('Restart this round with a fresh 20 seconds?', 'Restart round', () => leaveRun('restart'));
+    confirmChange('Restart this turn with a fresh 20 seconds?', 'Restart turn', () => leaveRun('restart'));
   },
   skip() {
-    confirmChange('Return this sign to the wheel and keep the player’s round?', 'Skip round', () => leaveRun('skip'));
+    confirmChange('Return this sign to the wheel and let the current player spin again?', 'Skip challenge', () => leaveRun('skip'));
   },
   correct(control) {
-    const p = active();
+    const p = state.people.find(person => person.id === control.dataset.person);
     const result = p?.results.find(item => item.id === control.dataset.challenge);
     if (!result) return;
     const award = !successful(result);
-    confirmChange('Set ' + signById[result.sign].word + ' to ' + (award ? 10 : 0) + ' points for ' + p.name + '?', 'Save correction', async () => {
-      await dispatch({ type: 'correct', personId: p.id, challengeId: result.id, award });
-      if (resultView?.result.id === result.id) { resultView.result = active().results.find(item => item.id === result.id); render(); }
-    });
+    confirmChange('Set ' + signById[result.sign].word + ' to ' + (award ? 10 : 0) + ' points for ' + p.name + '?', 'Save correction',
+      () => dispatch({ type: 'correct', personId: p.id, challengeId: result.id, award }));
   },
   async retry() {
-    if (!operator) return;
     if (active()?.pending?.deadline) await leaveRun('pause');
     problem = '';
     await camera.warm().catch(error => { problem = error.message; });
@@ -441,15 +426,21 @@ const actions = {
       toast(granted ? 'Durable storage granted.' : 'Browser declined durable storage.');
     } catch { toast('Durable storage is unavailable in this browser.'); }
   },
-  backup() {
-    fileDownload('signrelay-gameshow-' + new Date().toISOString().slice(0, 10) + '.backup.json',
-      JSON.stringify(state, null, 2), 'application/json');
+  csv() {
+    if (!state.people.length) { toast('Start a game to export scores.'); return; }
+    fileDownload('signrelay-gameshow-leaderboard.csv', '\uFEFF' + csv(leaderboard(state.people)), 'text/csv;charset=utf-8');
   },
-  csv() { fileDownload('signrelay-gameshow-leaderboard.csv', '\uFEFF' + csv(leaderboard(state.people)), 'text/csv;charset=utf-8'); },
-  import() { $('backup-file').click(); },
+  'restart-game'() {
+    if (!state.people.length) return;
+    confirmChange('Start over with the same players and clear all their scores?', 'Restart game', () => {
+      close('host');
+      resetPlay('restart-game');
+    });
+  },
   reset() {
-    confirmChange('Delete every player and score from this browser? Export a backup first if you need them.', 'Reset session', async () => {
-      if (await dispatch({ type: 'reset' })) close('host');
+    confirmChange('Clear the current names and scores and return to registration?', 'New Game', () => {
+      close('host');
+      resetPlay('new-game');
     });
   },
 };
@@ -470,22 +461,17 @@ document.addEventListener('keydown', event => {
     if ($('host').open) close('host'); else if (!hasDialog()) void actions.host();
   }
 });
-$('search').addEventListener('input', () => renderPeople(state));
-$('register').addEventListener('submit', async event => {
+$('registration').addEventListener('submit', event => {
   event.preventDefault();
   audio.unlock();
-  if (await dispatch({ type: 'register', id: uid(), name: $('name').value })) {
-    $('name').value = '';
-    $('search').value = '';
-    closePlayerPanel();
+  const entries = new FormData(event.currentTarget).getAll('player').map(name => ({ name, id: uid() }));
+  if (dispatch({ type: 'start-game', entries })) $('roster').replaceChildren();
+  else {
+    $('roster-error').hidden = false;
+    $('roster').querySelector('input').focus();
   }
 });
-$('rename-form').addEventListener('submit', async event => {
-  event.preventDefault();
-  await dispatch({ type: 'rename', personId: renameId, name: $('new-name').value });
-  close('rename');
-});
-$('players').addEventListener('close', () => { if (document.body.dataset.stage === 'teaching') $('lesson-video').play().catch(() => {}); });
+$('roster').addEventListener('input', () => { $('roster-error').hidden = true; });
 $('leader-dialog').addEventListener('close', () => {
   const board = $('leader-dialog');
   if (board.dataset.enteredFullscreen && document.fullscreenElement) void document.exitFullscreen().catch(() => {});
@@ -502,17 +488,6 @@ $('reference-video').closest('details').addEventListener('toggle', event => {
   const media = $('reference-video');
   if (event.target.open) media.play().catch(() => {}); else media.pause();
 });
-$('backup-file').addEventListener('change', async event => {
-  const file = event.target.files[0];
-  event.target.value = '';
-  if (!file) return;
-  try {
-    if (file.size > 14_000_000) throw new Error('This is not a GameShow backup.');
-    const backup = validateBackup(JSON.parse(await file.text()), signIds);
-    confirmChange('Replace this session with the backup containing ' + backup.people.length + ' players?', 'Restore backup',
-      () => dispatch({ type: 'restore', backup }));
-  } catch (error) { toast(error.message); }
-});
 $('host').addEventListener('change', async event => {
   const { target } = event;
   const key = target.dataset.setting;
@@ -520,7 +495,7 @@ $('host').addEventListener('change', async event => {
   const value = target.type === 'checkbox' ? target.checked : target.type === 'range' ? Number(target.value) / 100 : target.value;
   if (key === 'camera' || key === 'manual') {
     if (active()?.pending?.deadline) await leaveRun('pause');
-    else { problem = ''; camera.stopCamera(); }
+    else { starting = undefined; problem = ''; camera.stopCamera(); }
   }
   await dispatch({ type: 'settings', patch: { [key]: value } });
   camera.setThreshold(threshold(state.settings));
@@ -535,26 +510,12 @@ document.addEventListener('visibilitychange', () => {
   if (document.hidden && myRun && active()?.pending?.run === myRun) void leaveRun('pause');
 });
 window.addEventListener('pagehide', () => { camera.stopCamera(); });
+window.addEventListener('pageshow', event => { if (event.persisted) resetPlay('new-game'); });
 
-async function boot() {
-  store = await openStore(signIds);
-  if (navigator.locks) {
-    operator = await new Promise(resolve => {
-      navigator.locks.request('signrelay-gameshow-operator', { ifAvailable: true }, lock => {
-        resolve(!!lock);
-        if (lock) return new Promise(() => {});
-      }).catch(() => resolve(true));
-    });
-  } else operator = true;
-  const data = await store.read();
-  sync(data.state);
-  store.subscribe(() => { void store.read().then(data => sync(data.state)).catch(error => log(error.message)); });
-  const pending = active()?.pending;
-  if (pending?.deadline) {
-    if (operator) await dispatch({ type: 'recover', ...attemptKey(active()) });
-    else startClock();
-  }
-  if (operator) void camera.warm().catch(() => {});
+function boot() {
+  resetRoster();
+  render();
+  void camera.warm().catch(() => {});
   void refreshOffline();
   fetch('./lesson-credits.json').then(response => response.ok ? response.json() : []).then(clips => {
     $('credits').innerHTML = '<p>PopSign ASL v2.1, Georgia Tech and the Deaf Professional Arts Network. Clips resized and muted.</p><ul>' +
@@ -562,9 +523,5 @@ async function boot() {
         '">Source recording</a> · <a rel="noreferrer" target="_blank" href="https://creativecommons.org/licenses/by/4.0/">CC BY 4.0</a></li>').join('') + '</ul>';
   }).catch(() => {});
 }
-boot().catch(error => {
-  renderBoard(state);
-  render();
-  toast('GameShow could not open its saved session. ' + error.message);
-});
+boot();
 

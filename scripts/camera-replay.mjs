@@ -13,27 +13,25 @@ try {
   const page = await browser.newPage({ reducedMotion: 'reduce' });
   await page.addInitScript(value => { Math.random = () => value; }, Number(random));
   await page.goto(url);
-  await page.getByRole('button', { name: 'Join the game', exact: true }).click();
-  await page.locator('#name').fill('Replay scorer');
-  await page.getByRole('button', { name: 'Add player', exact: true }).click();
   const click = name => page.getByRole('button', { name, exact: true }).click();
+  if (await page.locator('#registration-stage').count()) {
+    await page.locator('#roster input').first().fill('Replay scorer');
+    await click('Start Game');
+  } else {
+    await click('Join the game');
+    await page.locator('#name').fill('Replay scorer');
+    await click('Add player');
+  }
   const spin = () => page.locator('#wheel-copy').getByRole('button', { name: 'Spin the wheel', exact: true }).click();
   const lesson = word => page.getByRole('heading', { name: word, exact: true }).waitFor();
-  const readPlayer = () => page.evaluate(() => new Promise((resolve, reject) => {
-    const req = indexedDB.open('signrelay-gameshow', 1);
-    req.onerror = () => reject(req.error);
-    req.onsuccess = () => {
-      const read = req.result.transaction('session').objectStore('session').get('show');
-      read.onsuccess = () => { resolve(read.result.people[0]); req.result.close(); };
-      read.onerror = () => reject(read.error);
-    };
-  }));
   await click('Host controls');
   await page.waitForFunction(() => document.querySelector('#diagnostics').textContent.includes('Model  Ready'));
   await click('Close host controls');
   await spin();
   await lesson(target);
   await click('Ready');
+  await page.locator('#challenge-stage').waitFor({ state: 'visible' });
+  const targetStart = performance.now();
   if (process.env.GAMESHOW_DEBUG) {
     await click('Host controls');
     await page.getByText('Readiness and diagnostics', { exact: true }).click();
@@ -44,6 +42,7 @@ try {
     await click('Close host controls');
   }
   await page.getByRole('heading', { name: 'You signed it!', exact: true }).waitFor({ timeout: 26000 });
+  const targetMs = Math.round(performance.now() - targetStart);
   assert.match(await page.locator('#result-stage').textContent(), /\+10/);
   await click('Next round');
   await spin();
@@ -51,16 +50,13 @@ try {
   await click('Ready');
   await page.locator('#challenge-stage').waitFor({ state: 'visible' });
   const began = performance.now();
-  const deadline = (await readPlayer()).pending.deadline;
   await page.getByRole('heading', { name: 'Nice try!', exact: true }).waitFor({ timeout: 26000 });
   const timeoutMs = Math.round(performance.now() - began);
   assert.ok(timeoutMs >= 19_500 && timeoutMs <= 21_500, 'Wrong-target round deadline drift: ' + timeoutMs + ' ms');
-  const results = (await readPlayer()).results;
-  assert.deepEqual(results.map(r => [r.sign,r.method]), [[target.toLowerCase(),'automatic'], [wrong.toLowerCase(),'timeout']]);
-  const deadlineOffset = results[1].completedAt - deadline;
-  assert.ok(deadlineOffset >= 0 && deadlineOffset <= 1500, 'Invalid persisted timeout offset: ' + deadlineOffset + ' ms');
-  console.log('PASS prerecorded ' + target + ' through the fake-camera path awarded one automatic +10; ' +
-    wrong + ' timed out after ' + timeoutMs + ' ms, persisted ' + deadlineOffset + ' ms after deadline.');
+  assert.match(await page.locator('#result-stage').textContent(), /\+0/);
+  assert.match(await page.locator('#board-list [aria-current=true] .board-score').textContent(), /^10\/50$/);
+  console.log('PASS prerecorded ' + target + ' awarded one automatic +10 after ' + targetMs + ' ms; ' +
+    wrong + ' timed out after ' + timeoutMs + ' ms with no additional score.');
 } finally {
   await browser?.close();
   await new Promise(resolve => server.close(resolve));

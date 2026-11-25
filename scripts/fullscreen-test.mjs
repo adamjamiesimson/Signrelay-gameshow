@@ -11,6 +11,8 @@ try {
   await page.waitForFunction(() => document.fullscreenElement === document.documentElement);
   await click('Toggle fullscreen');
   await page.waitForFunction(() => !document.fullscreenElement);
+  await page.locator('#roster input').first().fill('Fullscreen check');
+  await click('Start Game');
   await click('Full leaderboard');
   await click('Fullscreen leaderboard');
   await page.waitForFunction(() =>
