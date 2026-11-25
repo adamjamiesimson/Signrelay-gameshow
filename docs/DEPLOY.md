@@ -19,6 +19,6 @@ pnpm.cmd test:browser
 pnpm.cmd --package=firebase-tools@15.37.0 dlx -c 'node scripts/deploy.mjs signrelay-gameshow signrelay-gameshow'
 ```
 
-To recheck a release without deploying, run `node scripts/deploy.mjs signrelay-gameshow signrelay-gameshow --verify-only` against the corresponding local build. It polls the hosted manifest with a cache-busting query, checks status and content type before parsing, and verifies the hashes of the page, worker, all models, and all ten videos. A persistent HTML response should be investigated in the active release and redirect or rewrite settings.
+To recheck a release without deploying, run `node scripts/deploy.mjs signrelay-gameshow signrelay-gameshow --verify-only` against the corresponding local build. It polls the hosted manifest with a cache-busting query, requests the uncompressed CDN variant, checks status and content type before parsing, and verifies the hashes of the page, worker, all models, and all ten videos. A persistent HTML response should be investigated in the active release and redirect or rewrite settings.
 
 For clients on an earlier release, finish the game before reloading, then verify the build ID under **Host controls → Readiness and diagnostics**. The worker verifies the full new cache before activation and leaves the current page open. The next visit uses the new build. [GameShow site](https://signrelay-gameshow.web.app/) · [Firebase Hosting configuration](https://firebase.google.com/docs/hosting/full-config)

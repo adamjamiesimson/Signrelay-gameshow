@@ -10,10 +10,12 @@ test('Hosting verification retries HTML and stale manifests, then checks release
     sha256: createHash('sha256').update(html).digest('hex') }] };
   const messages = [];
   let polls = 0;
-  const request = async url => {
+  const request = async (url, options) => {
     assert.match(url.searchParams.get('release'), /^ready-/);
+    assert.equal(options.headers['Accept-Encoding'], 'identity');
     switch (url.pathname) {
       case '/runtime.json':
+        assert.equal(options.headers.Accept, 'application/json');
         if (++polls === 1) return new Response(html, { headers: { 'Content-Type': 'text/html' } });
         return Response.json(polls === 2 ? { version: 'old' } : manifest);
       case '/sw.js':

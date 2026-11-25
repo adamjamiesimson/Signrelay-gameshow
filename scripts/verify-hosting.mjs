@@ -32,7 +32,8 @@ export async function verifyHosting(base, { manifest, worker }, { request = fetc
   async function get(path, extension, attempt) {
     const url = new URL(path, base);
     url.searchParams.set('release', manifest.version + '-' + attempt + '-' + Date.now());
-    const response = await request(url, { cache: 'no-store', redirect: 'manual', signal: AbortSignal.timeout(20000) });
+    const response = await request(url, { cache: 'no-store', redirect: 'manual', signal: AbortSignal.timeout(20000),
+      headers: { 'Accept-Encoding': 'identity', Accept: extension === 'json' ? 'application/json' : '*/*' } });
     const header = response.headers.get('content-type') ?? '';
     const type = header.split(';')[0].trim().toLowerCase();
     const expected = types.get(extension);
