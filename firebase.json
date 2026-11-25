@@ -16,6 +16,10 @@
       {
         "regex": ".*",
         "headers": [{"key":"Cache-Control","value":"no-cache"}]
+      },
+      {
+        "regex": "\\.(onnx|task)$",
+        "headers": [{"key":"Content-Type","value":"application/octet-stream"}]
       }
     ]
   }

@@ -1,6 +1,6 @@
 # Firebase Hosting release
 
-The independent deployment uses Firebase project **signrelay-gameshow**, site **signrelay-gameshow**, and target **gameshow**. The deployment script accepts only those IDs and requires a matching `.firebaserc` target. `firebase.json` serves **dist** directly, with no SPA rewrite. The original SignRelay is a separate application.
+The independent deployment uses Firebase project **signrelay-gameshow**, site **signrelay-gameshow**, and target **gameshow**. The deployment script accepts only those IDs and requires a matching `.firebaserc` target. `firebase.json` serves **dist** directly, with no SPA rewrite, and explicitly sets the MIME type for ONNX and MediaPipe model files. The original SignRelay is a separate application.
 
 Open **Windows PowerShell** inside the dedicated GameShow checkout, where `firebase.json` and `package.json` are located. The release was prepared with Node.js 24 and Firebase CLI 15.37.0.
 
