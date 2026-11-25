@@ -37,7 +37,7 @@ for (const count of [1, 2, 4, 8]) {
     }
     assert.equal(state.complete, true);
     assert.equal(player(state), undefined);
-    assert.ok(state.people.every(p => score(p) === 40 && streaks(p).best === 4));
+    assert.ok(state.people.every(p => score(p) === 3860 && streaks(p).best === 4));
     assert.ok(leaderboard(state.people).every(p => p.rank === 1));
     const restart = apply(state, { type: 'restart-game' });
     assert.equal(player(restart).id, 'p0');

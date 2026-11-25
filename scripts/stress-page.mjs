@@ -1,4 +1,4 @@
-import { leaderboard, player, ROUND_MS, score, timeLeft, validateBackup } from '../src/game.mjs';
+import { leaderboard, player, ROUND_MS, score, timeLeft, validateBackup, weightedPoints } from '../src/game.mjs';
 import { openStore } from '../src/store.mjs';
 import { signIds } from '../src/signs.mjs';
 
@@ -63,12 +63,12 @@ globalThis.exercise = async count => {
       const expire = (n + round * 2) % 5 === 0;
       if (expire) {
         await write({ type: 'result', ...active, method: 'timeout', now: deadline - 1 }, false);
-        await write({ type: 'result', ...active, method: 'automatic', now: deadline }, false);
+        await write({ type: 'result', ...active, method: 'automatic', now: deadline + 1 }, false);
         clock = deadline;
         timeouts++;
       } else {
         clock += 1550;
-        scores.set(personId, scores.get(personId) + 10);
+        scores.set(personId, scores.get(personId) + weightedPoints(ROUND_MS - timeLeft(record.pending, clock)));
       }
       const method = expire ? 'timeout' : (n % 2 ? 'manual' : 'automatic');
       const action = { type: 'result', ...active, method, now: clock };
@@ -103,7 +103,7 @@ globalThis.exercise = async count => {
     txP50Ms: q(measure, .50), txP95Ms: q(measure, .95),
     initialTxP95Ms: q(measure.slice(0, Math.floor(measure.length / 4)), .95),
     finalTxP95Ms: q(measure.slice(-Math.floor(measure.length / 4)), .95),
-    totalPoints: ranked.reduce((sum, person) => sum + person.points, 0),
+    totalPoints: ranked.reduce((sum, person) => sum + person.points, 0) / 100,
   };
 };
 

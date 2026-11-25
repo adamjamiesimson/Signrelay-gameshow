@@ -1,4 +1,4 @@
-import { leaderboard, MAX_ROUNDS, MODES, player, score, streaks, successful } from './game.mjs';
+import { BASE_POINTS, correctCount, correctionPoints, formatPoints, leaderboard, MAX_POINTS, MAX_ROUNDS, MODES, player, score, signingStats, streaks, successful } from './game.mjs';
 import { signById } from './signs.mjs';
 import { icon } from './icons.mjs';
 import { nextPlayer, roundNumber } from './party.mjs';
@@ -9,11 +9,12 @@ export const escapeHtml = value => String(value).replace(/[&<>"']/g, character =
 export const playerNumber = p => '#' + String(p.number).padStart(3, '0');
 const button = (action, label, kind = '') => '<button data-action="' + action + '" class="' + kind + '">' + label + '</button>';
 const buy = (action, label) => button(action, label, 'primary');
+const formatTime = ms => Number.isFinite(ms) ? (ms / 1000).toFixed(2) + ' s' : '—';
 const podium = (current, p) => '<li class="board-row' + (current === p.id ? ' active' : '') + (p.points > 0 && p.rank === 1 ? ' best' : '') +
   '" data-row="' + p.id + '"' + (current === p.id ? ' aria-current="true"' : '') + '><span class="rank">' + p.rank +
   '</span><div><div class="board-name">' + escapeHtml(p.name) + '</div><div class="board-meta">' + playerNumber(p) +
   ' · ' + p.results.length + '/5 rounds' + (p.streak >= 3 ? ' · ' + p.streak + '-sign streak' : '') +
-  '</div></div><span class="board-score"><span data-points="' + p.points + '">' + p.points + '</span><small>/50</small></span></li>';
+  '</div></div><span class="board-score"><span data-points="' + p.points + '">' + formatPoints(p.points) + '</span><small>/50</small></span></li>';
 
 export function setupIcons() {
   for (const [action, mark] of Object.entries({ mute:'sound', fullscreen:'fullscreen', host:'gear', leaderboard:'board', 'leader-fullscreen':'fullscreen', replay:'replay' })) {
@@ -29,7 +30,7 @@ export function renderBoard(state) {
     const list = $(id);
     if (id === 'full-board' && !$('leader-dialog').open) continue;
     const previous = new Map([...list.querySelectorAll('[data-row]')].map(row => [row.dataset.row,
-      { top: row.offsetTop, points: Number(row.querySelector('[data-points]')?.textContent) }]));
+      { top: row.offsetTop, points: Math.round(Number(row.querySelector('[data-points]')?.textContent) * 100) }]));
     const scroll = list.scrollTop;
     list.innerHTML = rows.length ? rows.map(p => podium(state.activeId, p)).join('') :
       '<li class="board-empty">Scores appear when players join.</li>';
@@ -47,7 +48,7 @@ export function renderBoard(state) {
           const step = now => {
             if (!points.isConnected) return;
             const part = Math.min(1, (now - start) / 330);
-            points.textContent = Math.round(prior.points + (total - prior.points) * part);
+            points.textContent = formatPoints(Math.round(prior.points + (total - prior.points) * part));
             if (part < 1) requestAnimationFrame(step);
           };
           requestAnimationFrame(step);
@@ -65,7 +66,7 @@ export function renderBoard(state) {
   }).join('');
   $('player-card').innerHTML = p
     ? '<div class="player-card-head"><div><p class="eyebrow">CURRENT PLAYER</p><h2>' +
-      escapeHtml(p.name) + ' <span>' + playerNumber(p) + '</span></h2></div><span class="board-score">' + score(p) +
+      escapeHtml(p.name) + ' <span>' + playerNumber(p) + '</span></h2></div><span class="board-score">' + formatPoints(score(p)) +
       '<small>/50</small></span></div><div class="round-dots" aria-label="' + count + ' of 5 rounds complete">' + dots + '</div>' +
       '<p class="player-hint">Round ' + roundNumber(state) + ' of 5 · ' +
       (next ? 'Next up ' + escapeHtml(next.name) + ' · ' + playerNumber(next) : 'Final turn') + '</p>'
@@ -108,7 +109,7 @@ export function renderStage(kind, p, state, ui) {
     if (video.paused) video.play().catch(() => {});
   } else if (kind === 'challenge') {
     $('challenge-copy').innerHTML = '<p class="eyebrow">ROUND ' + (p.results.length + 1) + ' OF 5</p><h1 id="challenge-title">' + sign.word +
-      '</h1><p class="meta">' + escapeHtml(p.name) + ' · ' + score(p) + '/50 points</p>';
+      '</h1><p class="meta">' + escapeHtml(p.name) + ' · ' + formatPoints(score(p)) + '/50 points</p>';
     setVideo('reference-video', sign);
     $('challenge-actions').innerHTML = !p.pending.deadline ?
       '<button class="primary" data-action="start"' + (ui.starting ? ' disabled' : '') + '>' + (ui.starting ? 'Getting ready…' : 'Resume') + '</button>' : '';
@@ -124,9 +125,12 @@ export function renderStage(kind, p, state, ui) {
     const screen = $('result-stage');
     screen.classList.toggle('win', correct);
     screen.innerHTML = '<p class="eyebrow">' + signById[r.sign].word + ' · ROUND ' + p.results.length + ' OF 5</p><h1>' +
-      (correct ? 'You signed it!' : 'Nice try!') + '</h1><div class="result-points">' + (correct ? '+10' : '+0') +
-      ' <small>points</small></div>' + (correct && chain >= 3 ? '<p class="streak">' + icon('bolt') + ' ' + chain + '-SIGN STREAK</p>' : '') +
-      '<p class="description">' + escapeHtml(p.name) + ' · ' + score(p) + '/50' +
+      (correct ? 'You signed it!' : 'Nice try!') + '</h1><div class="result-points" data-award="' + r.points + '">+' + formatPoints(r.points) +
+      ' <small>points</small></div>' + (correct ? '<dl class="result-stats score-breakdown"><div><dt>Time taken</dt><dd>' +
+        formatTime(r.elapsedMs) + '</dd></div><div><dt>Base points</dt><dd>' + formatPoints(BASE_POINTS) +
+        '</dd></div><div><dt>Speed bonus</dt><dd>+' + formatPoints(r.points - BASE_POINTS) + '</dd></div></dl>' : '') +
+      (correct && chain >= 3 ? '<p class="streak">' + icon('bolt') + ' ' + chain + '-SIGN STREAK</p>' : '') +
+      '<p class="description">' + escapeHtml(p.name) + ' · ' + formatPoints(score(p)) + '/50' +
       (next ? '<br>Up next ' + escapeHtml(next.name) + ' · ' + playerNumber(next) : '') +
       '</p>' + buy('next', next ? state.people.length === 1 ? 'Next round' : 'Next Player' : 'See final results');
   } else if (kind === 'completion') {
@@ -136,15 +140,23 @@ export function renderStage(kind, p, state, ui) {
       const people = rows.filter(row => row.rank === rank);
       return '<li class="podium-place place-' + rank + '"><span>' + ['','1st','2nd','3rd'][rank] + '</span>' +
         (people.length ? people.map(row => '<strong>' + escapeHtml(row.name) + ' <small>' + playerNumber(row) + '</small></strong>').join('') +
-          '<span>' + people[0].points + '/50</span>' : '<span aria-label="No player at this rank">—</span>') + '</li>';
+          '<span>' + formatPoints(people[0].points) + '/50</span>' : '<span aria-label="No player at this rank">—</span>') + '</li>';
     }).join('');
     const screen = $('completion-stage');
-    screen.classList.toggle('perfect', winners[0].points === 50);
+    const perfectScore = winners[0].points === MAX_POINTS * MAX_ROUNDS;
+    const allCorrect = winners.some(winner => correctCount(winner) === MAX_ROUNDS);
+    screen.classList.toggle('perfect', allCorrect);
     screen.innerHTML = '<div class="finale-head"><p class="eyebrow">FIVE ROUNDS COMPLETE</p><h1>' +
       (winners.length > 1 ? 'Shared victory!' : escapeHtml(winners[0].name) + ' wins!') + '</h1>' +
-      (winners[0].points === 50 ? '<p class="finale-perfect">Perfect score · 50/50</p>' : '') + '</div><ol class="podium" aria-label="Podium">' + places +
-      '</ol><ul class="final-standings" aria-label="Final scores and best streaks">' + rows.map(row =>
-        '<li><span><b>' + row.rank + '</b> ' + escapeHtml(row.name) + ' <small>' + playerNumber(row) + '</small></span><strong>' + row.points + '/50</strong><small>Best streak ' + streaks(row).best + '</small></li>').join('') +
+      (perfectScore ? '<p class="finale-perfect">Perfect score · 50.00/50</p>' : allCorrect ? '<p class="finale-perfect">All five signs correct</p>' : '') +
+      '</div><ol class="podium" aria-label="Podium">' + places +
+      '</ol><ul class="final-standings" aria-label="Final scores and signing times">' + rows.map(row => {
+        const stats = signingStats(row);
+        const fastest = stats.fastest ? signById[stats.fastest.sign].word + ' · ' + formatTime(stats.fastest.elapsedMs) : '—';
+        return '<li><span><b aria-label="Rank ' + row.rank + '">' + row.rank + '</b> ' + escapeHtml(row.name) + ' <small>' + playerNumber(row) +
+          '</small></span><strong>' + formatPoints(row.points) + '/50</strong><div class="final-metrics"><small>' + stats.correct + '/5 correct</small>' +
+          '<small>Average ' + formatTime(stats.averageMs) + '</small><small>Fastest ' + fastest + '</small><small>Best streak ' + streaks(row).best + '</small></div></li>';
+      }).join('') +
       '</ul>' + buy('new-game', 'New Game');
   }
 }
@@ -152,7 +164,7 @@ export function renderStage(kind, p, state, ui) {
 export function renderHost(state, ui) {
   const p = player(state);
   const r = p?.pending;
-  $('host-round').innerHTML = p ? '<p>' + escapeHtml(p.name) + ' · ' + playerNumber(p) + ' · ' + score(p) + '/50</p>' +
+  $('host-round').innerHTML = p ? '<p>' + escapeHtml(p.name) + ' · ' + playerNumber(p) + ' · ' + formatPoints(score(p)) + '/50</p>' +
     (r ? '<div class="button-row">' +
       (r.deadline ? button('pause', 'Pause') + button('manual', 'Confirm correct', 'primary') : button('start', r.ready ? 'Resume' : 'Start round')) +
       button('restart', 'Restart turn') + button('skip', 'Skip challenge') + '</div>' : '') : '';
@@ -160,7 +172,7 @@ export function renderHost(state, ui) {
     $('host-round').insertAdjacentHTML('beforeend', '<details><summary>Correct a score</summary>' + state.people.filter(person => person.results.length).map(person =>
       '<p>' + escapeHtml(person.name) + ' · ' + playerNumber(person) + '</p><div class="button-row">' + person.results.map(result =>
         '<button data-action="correct" data-person="' + person.id + '" data-challenge="' + result.id + '">' + signById[result.sign].word + ' · ' +
-        (successful(result) ? 'set to 0' : 'award 10') + '</button>').join('') + '</div>').join('') + '</details>');
+        (successful(result) ? 'set to 0.00' : 'award ' + formatPoints(correctionPoints(result))) + '</button>').join('') + '</div>').join('') + '</details>');
   }
   const { settings } = state;
   $('sensitivity').value = settings.mode;

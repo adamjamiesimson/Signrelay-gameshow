@@ -1,6 +1,7 @@
 export const MAX_ROUNDS = 5;
 export const ROUND_MS = 20_000;
-export const POINTS = 10;
+export const MAX_POINTS = 1000;
+export const BASE_POINTS = 500;
 export const MODES = Object.freeze({ relaxed: 0.60, standard: 0.69, strict: 0.79 });
 export const DEFAULTS = Object.freeze({ mode: 'relaxed', custom: 0.60, volume: 0.48, muted: false, overlay: true, camera: '', manual: false });
 export const initial = () => ({ version: 1, revision: 0, nextNumber: 1, activeId: null, settings: { ...DEFAULTS }, people: [] });
@@ -8,7 +9,20 @@ export const cleanName = s => String(s ?? '').trim().replace(/\s+/gu, ' ').slice
 export const player = state => state.people.find(p => p.id === state.activeId);
 export const timeLeft = (pending, now = Date.now()) => Math.min(ROUND_MS, Math.max(0, pending?.deadline ? pending.deadline - now : pending?.remaining ?? ROUND_MS));
 export const successful = result => result.method !== 'timeout' && result.method !== 'corrected-zero';
-export const score = person => person.results.filter(successful).length * POINTS;
+export const weightedPoints = elapsedMs => Math.min(MAX_POINTS, Math.max(BASE_POINTS, Math.round(MAX_POINTS - elapsedMs / 40)));
+export const formatPoints = cents => (cents / 100).toFixed(2);
+export const score = person => person.results.reduce((total, result) => total + (successful(result) ? result.points ?? MAX_POINTS : 0), 0);
+export const correctCount = person => person.results.filter(successful).length;
+const correctionTime = result => result.elapsedMs ?? ((result.originalMethod ?? result.method) === 'timeout' ? ROUND_MS : undefined);
+export const correctionPoints = result => weightedPoints(correctionTime(result) ?? 0);
+
+export function signingStats(person) {
+  const wins = person.results.filter(successful);
+  const timed = wins.filter(result => result.originalMethod !== 'timeout' && Number.isFinite(result.elapsedMs));
+  const fastest = timed.reduce((best, result) => !best || result.elapsedMs < best.elapsedMs ? result : best, undefined);
+  const averageMs = timed.length ? timed.reduce((total, result) => total + result.elapsedMs, 0) / timed.length : undefined;
+  return { correct: wins.length, fastest, averageMs };
+}
 
 export function streaks(person) {
   let current = 0;
@@ -49,13 +63,17 @@ export function freezeAttempt(p, now) {
     return;
   }
   p.pending.remaining = timeLeft(p.pending, now);
+  delete p.pending.startedAt;
   p.pending.deadline = null;
   p.pending.run = null;
 }
 
 function recordResult(person, method, completedAt) {
-  const { id, sign, selectedAt } = person.pending;
-  person.results.push({ id, sign, method, selectedAt, completedAt });
+  const pending = person.pending;
+  const { id, sign, selectedAt } = pending;
+  const elapsedMs = method === 'timeout' ? ROUND_MS : ROUND_MS - timeLeft(pending, completedAt);
+  const points = method === 'timeout' ? 0 : weightedPoints(elapsedMs);
+  person.results.push({ id, sign, method, selectedAt, completedAt, elapsedMs, points });
   person.pending = null;
 }
 
@@ -102,9 +120,10 @@ function update(state, action, supported) {
       p.pending = { id: action.id, sign: action.sign, selectedAt: now, ready: false, remaining: ROUND_MS, deadline: null, run: null };
       return true;
     case 'start':
-      if (!ownsAttempt || pending.deadline || !action.run) return false;
+      if (!ownsAttempt || pending.deadline || !action.run || !Number.isFinite(now)) return false;
       pending.ready = true;
       pending.remaining ||= ROUND_MS;
+      pending.startedAt = now;
       pending.deadline = now + pending.remaining;
       pending.run = action.run;
       return true;
@@ -114,12 +133,14 @@ function update(state, action, supported) {
       return true;
     case 'recover':
       if (!ownsRun) return false;
+      delete pending.startedAt;
       pending.deadline = null;
       pending.run = null;
       pending.remaining = ROUND_MS;
       return true;
     case 'restart':
       if (!ownsAttempt) return false;
+      delete pending.startedAt;
       pending.deadline = null;
       pending.run = null;
       pending.remaining = ROUND_MS;
@@ -132,7 +153,9 @@ function update(state, action, supported) {
     case 'result': {
       if (!ownsRun || p.results.length >= MAX_ROUNDS || p.results.some(result => result.id === pending.id)) return false;
       if (!['automatic', 'manual', 'timeout'].includes(action.method)) return false;
-      if ((action.method === 'timeout') !== (now >= pending.deadline)) return false;
+      const startedAt = pending.startedAt ?? pending.deadline - pending.remaining;
+      if (!Number.isFinite(now) || (action.method === 'timeout' ? now < pending.deadline :
+        now < startedAt || now > pending.deadline)) return false;
       recordResult(p, action.method, now);
       return true;
     }
@@ -141,6 +164,9 @@ function update(state, action, supported) {
       if (!result || successful(result) === action.award) return false;
       result.originalMethod ??= result.method;
       result.method = action.award ? 'corrected-correct' : 'corrected-zero';
+      const elapsedMs = correctionTime(result);
+      if (elapsedMs !== undefined) result.elapsedMs = elapsedMs;
+      result.points = action.award ? correctionPoints(result) : 0;
       result.correctedAt = now;
       return true;
     }
@@ -194,6 +220,10 @@ export function validateBackup(input, supported) {
       validChallenge(r);
       if (!methods.includes(r.method) || !date(r.completedAt)) throw new Error('Invalid challenge result.');
       const item = { id: r.id, sign: r.sign, method: r.method, selectedAt: r.selectedAt, completedAt: r.completedAt };
+      if (Number.isFinite(r.elapsedMs) && r.elapsedMs >= 0 && r.elapsedMs <= ROUND_MS) {
+        item.elapsedMs = r.elapsedMs;
+        item.points = successful(item) ? weightedPoints(r.elapsedMs) : 0;
+      }
       if (methods.slice(0, 3).includes(r.originalMethod) && date(r.correctedAt)) {
         item.originalMethod = r.originalMethod;
         item.correctedAt = r.correctedAt;
@@ -221,6 +251,6 @@ export function csv(rows) {
     return '"' + value.replaceAll('"', '""') + '"';
   };
   return ['Rank,Name,Player ID,Score,Completed,Best streak', ...rows.map(p =>
-    [p.rank, p.name, p.number, p.points, p.results.length, streaks(p).best].map(quote).join(','))].join('\r\n') + '\r\n';
+    [p.rank, p.name, p.number, formatPoints(p.points), p.results.length, streaks(p).best].map(quote).join(','))].join('\r\n') + '\r\n';
 }
 

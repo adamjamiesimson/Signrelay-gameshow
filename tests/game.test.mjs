@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { csv, initial, leaderboard, player, reduce, score, streaks, timeLeft, validateBackup, ROUND_MS } from '../src/game.mjs';
+import { csv, formatPoints, initial, leaderboard, player, reduce, score, signingStats, streaks, timeLeft, validateBackup, weightedPoints, ROUND_MS } from '../src/game.mjs';
 import { SIGNS, signIds } from '../src/signs.mjs';
 
 const at = 1_800_000_000_000;
@@ -40,7 +40,7 @@ test('perfect game, unique signs, all five awards and persisted streak', () => {
     s = expected;
     assert.equal(s, play(s, sign, 'already-played'));
   }
-  assert.equal(score(player(s)), 50);
+  assert.equal(score(player(s)), 4875);
   assert.deepEqual(streaks(player(s)), { current: 5, best: 5 });
   assert.equal(s, play(s, signIds[6], 'over-limit'));
   assert.deepEqual(validateBackup(s, signIds).people, s.people);
@@ -52,7 +52,7 @@ test('five timeouts award zero and a deadline is authoritative', () => {
     const k = key('p1', id);
     s = start(play(s, sign, id), k);
     assert.equal(s, result(s, k, 'timeout', ROUND_MS - 1));
-    assert.equal(s, result(s, k, 'manual', ROUND_MS));
+    assert.equal(s, result(s, k, 'manual', ROUND_MS + 1));
     s = result(s, k, 'timeout', ROUND_MS);
   }
   assert.equal(player(s).results.length, 5);
@@ -88,6 +88,46 @@ test('restart, skip, crash recovery and corrections respect ownership', () => {
   s = send(s, { type: 'correct', ...key('p1','r2'), award: false });
   assert.equal(score(player(s)), 0);
   assert.equal(player(s).results[0].originalMethod, 'manual');
+  s = send(s, { type: 'correct', ...key('p1','r2'), award: true });
+  assert.equal(score(player(s)), 975);
+});
+
+test('speed weighting clamps and rounds to integer hundredths at the exact boundaries', () => {
+  const cases = [[-1, 1000], [0, 1000], [20, 1000], [20.001, 999], [1000, 975], [2000, 950],
+    [5000, 875], [10000, 750], [15000, 625], [20000, 500], [21000, 500]];
+  for (const [elapsedMs, points] of cases) assert.equal(weightedPoints(elapsedMs), points);
+  assert.equal(formatPoints(950), '9.50');
+  const attempt = start(play(join(initial(), 'p1')), key('p1'));
+  assert.equal(result(attempt, key('p1'), 'automatic', -0.125), attempt);
+  assert.equal(result(attempt, key('p1'), 'automatic', ROUND_MS + 0.125), attempt);
+  const boundary = result(attempt, key('p1'), 'automatic', ROUND_MS);
+  assert.equal(player(boundary).results[0].points, 500);
+  assert.equal(result(boundary, key('p1'), 'timeout', ROUND_MS), boundary);
+});
+
+test('elapsed time excludes pauses and rejects a recognition timestamp from the prior run', () => {
+  const first = key('p1');
+  let s = start(play(join(initial(), 'p1')), first);
+  s = send(s, { ...first, type: 'pause', now: at + 1750.5 });
+  assert.equal(timeLeft(player(s).pending, at + 30_000), 18249.5);
+  const second = key('p1', 'r1', 'resumed');
+  s = send(s, { ...second, type: 'start', now: at + 40_000 });
+  assert.equal(result(s, first, 'automatic', 41_249.5), s);
+  assert.equal(result(s, second, 'automatic', 39_999.5), s);
+  s = result(s, second, 'automatic', 41_249.5);
+  assert.deepEqual([player(s).results[0].elapsedMs, score(player(s))], [3000, 925]);
+});
+
+test('a corrected timeout gives the base award and the finale aggregates only successful times', () => {
+  let s = start(play(join(initial(), 'p1')), key('p1'));
+  s = result(s, key('p1'), 'manual', 2000);
+  s = start(play(s, signIds[1], 'r2'), key('p1', 'r2'));
+  s = result(s, key('p1', 'r2'), 'timeout', ROUND_MS);
+  assert.equal(signingStats(player(s)).averageMs, 2000);
+  s = send(s, { type: 'correct', ...key('p1','r2'), award: true });
+  const stats = signingStats(player(s));
+  assert.deepEqual([stats.correct, stats.averageMs, stats.fastest.id, score(player(s))], [2, 2000, 'r1', 1450]);
+  assert.match(csv(leaderboard(s.people)), /"14\.50"/);
 });
 test('competition ranks share ties, count all players and protect CSV formulas', () => {
   let s = initial();

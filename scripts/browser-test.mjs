@@ -33,6 +33,10 @@ async function openBrowser() {
     args: ['--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream', '--disable-background-networking'] });
   page = context.pages()[0];
   page.setDefaultTimeout(20000);
+  await page.addInitScript(() => {
+    const nativeNow = performance.now.bind(performance);
+    Object.defineProperty(performance, 'now', { value: () => window.scoringTestTime ?? nativeNow() });
+  });
   context.on('request', request => {
     const value = new URL(request.url());
     if (value.origin !== origin && value.protocol !== 'blob:') external.push(request.url());
@@ -97,25 +101,38 @@ async function playGame(names, { failFirst = false, checkHost = false } = {}) {
       assert.ok(!signs[index].has(selected), 'repeated sign for ' + name);
       signs[index].add(selected);
       if (!round && !index) await page.waitForFunction(() => document.querySelector('#lesson-video').readyState >= 2);
+      await page.evaluate(() => { window.scoringTestTime = performance.now(); });
       await click('Ready');
       await stage('challenge');
       assert.equal(await page.locator('#seconds').textContent(), '20');
+      assert.equal(await page.locator('#potential-points').textContent(), '10.00');
       if (failFirst && !round) {
-        await page.clock.setFixedTime(new Date(await page.evaluate(() => Date.now()) + 21000));
+        await page.evaluate(() => { window.scoringTestTime += 20000; });
         await stage('result');
-        await waitText('#result-stage', '+0');
+        await waitText('#result-stage', '+0.00');
       } else {
         await click('Host controls');
         if (checkHost && !round && !index) {
+          await page.evaluate(() => { window.scoringTestTime += 1000; });
+          await waitText('#potential-points', '9.75');
           await click('Pause', host());
+          await page.evaluate(() => { window.scoringTestTime += 15000; });
+          assert.equal(await page.locator('#potential-points').textContent(), '9.75');
+          await click('Resume', host());
+        } else if (checkHost && round === 1 && !index) {
+          await page.evaluate(() => { window.scoringTestTime += 5000; });
           await confirm('Restart turn');
           await click('Start round', host());
         }
+        await page.evaluate(amount => { window.scoringTestTime += amount; }, checkHost && !round && !index ? 1000 : 2000);
+        await waitText('#potential-points', '9.50');
         await click('Confirm correct', host());
         await click('Close host controls', host());
         await stage('result');
-        await waitText('#result-stage', '+10');
+        await waitText('#result-stage', '+9.50');
+        assert.deepEqual(await page.locator('.score-breakdown dd').allTextContents(), ['2.00 s', '5.00', '+4.50']);
       }
+      await page.evaluate(() => { delete window.scoringTestTime; });
       const last = round === 4 && index === names.length - 1;
       await click(last ? 'See final results' : names.length === 1 ? 'Next round' : 'Next Player');
     }
@@ -125,7 +142,9 @@ async function playGame(names, { failFirst = false, checkHost = false } = {}) {
   const standings = page.locator('.final-standings li');
   assert.equal(await standings.count(), names.length);
   for (const row of await standings.all()) {
-    assert.match(await row.textContent(), failFirst ? /40\/50Best streak 4/ : /50\/50Best streak 5/);
+    assert.equal(await row.locator('strong').textContent(), failFirst ? '38.00/50' : '47.50/50');
+    assert.match(await row.locator('.final-metrics').textContent(), failFirst ? /4\/5 correct.*Best streak 4/ : /5\/5 correct.*Best streak 5/);
+    assert.match(await row.locator('.final-metrics').textContent(), /Average 2.00 s.*Fastest .+2.00 s/);
     assert.equal(await row.locator('b').textContent(), '1');
   }
   if (checkHost) {
@@ -134,14 +153,15 @@ async function playGame(names, { failFirst = false, checkHost = false } = {}) {
     await host().locator('[data-action=correct]').last().click();
     await click('Save correction', page.locator('#confirm'));
     await click('Close host controls', host());
-    assert.match(await standings.last().textContent(), /40\/50Best streak 4/);
+    assert.equal(await standings.last().locator('strong').textContent(), '38.00/50');
+    assert.match(await standings.last().locator('.final-metrics').textContent(), /Best streak 4/);
     assert.equal(await standings.last().locator('b').textContent(), String(names.length));
   }
   await click('New Game');
   await stage('registration');
   assert.deepEqual(await page.locator('#roster input').evaluateAll(inputs => inputs.map(input => input.value)), ['', '', '', '']);
   assert.equal(await page.locator('#board-list [data-row]').count(), 0);
-  console.log('PASS ' + names.length + ' player game, rotation, five unique signs per player, rankings, streaks, and New Game');
+  console.log('PASS ' + names.length + ' player game, weighted awards, rotation, five distinct signs, rankings, timing stats, and New Game');
 }
 
 try {

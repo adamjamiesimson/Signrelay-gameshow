@@ -1,6 +1,6 @@
 # SignRelay GameShow
 
-**Spin. Sign. Score.** A standalone webcam game for the SignRelay university exhibition on 26 November 2026. Solo players and groups share one laptop and webcam. Every player takes five 20-second turns for up to 50 points. Names, turns, and scores live in the current tab and clear on reload. Camera frames stay in memory. The threshold defaults to Relaxed 0.60.
+**Spin. Sign. Score.** A standalone webcam game for the SignRelay university exhibition on 26 November 2026. Solo players and groups share one laptop and webcam. Every player takes five 20-second turns for up to 50 points. A correct sign earns 5.00 base points and up to 5.00 additional points for signing quickly. Names, turns, and scores live in the current tab and clear on reload. Camera frames stay in memory. The threshold defaults to Relaxed 0.60.
 
 ## Run the prepared offline release
 

@@ -7,9 +7,11 @@ import { chromium } from 'playwright-core';
 import { serve } from './serve.mjs';
 
 const base = process.argv[2];
-if (!base) throw new Error('Usage: node scripts/upgrade-test.mjs <previous-kiosk-dist>');
+const afterDirectory = process.argv[3] ?? 'dist';
+const betweenGames = process.argv.includes('--between-games');
+if (!base) throw new Error('Usage: node scripts/upgrade-test.mjs <previous-kiosk-dist> [next-dist] [--between-games]');
 const before = JSON.parse(await readFile(resolve(base, 'runtime.json'), 'utf8')).version;
-const after = JSON.parse(await readFile('dist/runtime.json', 'utf8')).version;
+const after = JSON.parse(await readFile(resolve(afterDirectory, 'runtime.json'), 'utf8')).version;
 assert.notEqual(before, after);
 const profile = await mkdtemp(resolve(tmpdir(), 'gameshow-upgrade-'));
 const chrome = process.env.GAMESHOW_CHROME ??
@@ -48,7 +50,7 @@ try {
   await page.waitForFunction(() => document.querySelector('#board-count').textContent === '1 player');
 
   await stopServer();
-  server = (await serve({ port })).server;
+  server = (await serve({ port, directory: afterDirectory })).server;
   await page.evaluate(async () => (await navigator.serviceWorker.getRegistration()).update());
   let activated = false;
   const deadline = Date.now() + 60000;
@@ -59,7 +61,12 @@ try {
   }
   assert.ok(activated, 'The new worker did not finish activating within 60 seconds');
   assert.match(await page.locator('#board-list .board-name').first().textContent(), /Upgrade test player/);
-  await page.reload();
+  if (betweenGames) {
+    await click('Host controls');
+    await page.getByText('Game and results', { exact: true }).click();
+    await page.locator('#host [data-action=reset]').click();
+    await Promise.all([page.waitForEvent('framenavigated'), page.locator('#confirm-yes').click()]);
+  } else await page.reload();
   await page.locator('#registration-stage').waitFor();
   console.log('PASS the active page stayed open during cache activation and reloaded into registration');
   await context.close();

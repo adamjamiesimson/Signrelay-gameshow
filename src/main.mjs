@@ -1,5 +1,5 @@
-import { Camera } from './camera.mjs';
-import { csv, leaderboard, MAX_ROUNDS, player, ROUND_MS, score, streaks, successful, timeLeft } from './game.mjs';
+import { Camera, MATCH_MAX_AGE_MS } from './camera.mjs';
+import { correctCount, correctionPoints, csv, formatPoints, leaderboard, MAX_ROUNDS, player, ROUND_MS, streaks, successful, timeLeft, weightedPoints } from './game.mjs';
 import { icon } from './icons.mjs';
 import { checkOffline } from './offline.mjs';
 import { SIGNS, signIds, signById } from './signs.mjs';
@@ -28,6 +28,8 @@ let nextTone;
 let nextDiagnostics = 0;
 let recoveryKey;
 let recoveryInProgress = false;
+let controller = navigator.serviceWorker?.controller;
+let updateReady = false;
 const logs = [];
 
 const audio = new Audio(() => state.settings);
@@ -121,7 +123,7 @@ function sync(newState, updateBoard) {
 }
 
 function dispatch(action) {
-  const next = partyAction(state, action, signIds);
+  const next = partyAction(state, { ...action, now: action.now ?? performance.now() }, signIds);
   if (next === state) return false;
   if (action.type === 'settings') {
     try { localStorage.setItem(settingsKey, JSON.stringify(next.settings)); } catch {}
@@ -134,9 +136,11 @@ function drawClock() {
   const p = active();
   if (!p?.pending?.ready) return;
   const round = p.pending;
-  const remaining = timeLeft(round);
+  const now = performance.now();
+  const remaining = timeLeft(round, now);
   const seconds = Math.ceil(remaining / 1000);
   say($('seconds'), String(seconds));
+  say($('potential-points'), formatPoints(weightedPoints(ROUND_MS - remaining)));
   $('countdown').classList.toggle('low', seconds <= 5);
   $('time-fill').style.transform = 'scaleX(' + (remaining / ROUND_MS).toFixed(4) + ')';
   if (!round.deadline) {
@@ -145,23 +149,28 @@ function drawClock() {
   }
   if (myRun !== round.run) return;
   if (seconds && seconds <= 5 && seconds !== nextTone) { nextTone = seconds; audio.play('final'); }
-  if (remaining <= 0 && !finishing) void settle('timeout', myRun);
+  if (remaining <= 0) {
+    if (!finishing && (now >= round.deadline + MATCH_MAX_AGE_MS || !camera.hasPendingMatch(myRun))) {
+      void settle('timeout', myRun, round.deadline);
+    } else if (camera.hasPendingMatch(myRun)) say($('feedback'), 'Checking your last attempt…');
+    return;
+  }
   const feedback = state.settings.manual ? 'Sign for your host before time runs out.' :
     observedHands <= 0 ? 'Show your hands inside the frame.' :
     evidence?.score >= threshold(state.settings) * .76 ? 'You’re getting closer!' : 'Take your time and try the movement again.';
   say($('feedback'), feedback);
 }
 function startClock() {
-  clearInterval(challengeTick);
+  cancelAnimationFrame(challengeTick);
   nextTone = undefined;
-  drawClock();
-  challengeTick = setInterval(() => {
-    if (!active()?.pending?.deadline && !starting) { clearInterval(challengeTick); challengeTick = undefined; }
+  const tick = () => {
     drawClock();
-  }, 80);
+    if (active()?.pending?.deadline) challengeTick = requestAnimationFrame(tick);
+  };
+  tick();
 }
 function cameraEvent(type, value) {
-  if (type === 'match') { void settle('automatic', value); return; }
+  if (type === 'match') { void settle('automatic', value.run, value.timestamp); return; }
   if (type === 'fault') { void recoverCamera(value); return; }
   if (type === 'hands') { tracking = value; observedHands = value.count; }
   if (type === 'evidence') evidence = value;
@@ -209,7 +218,7 @@ async function beginRound() {
     starting = undefined;
     const committed = dispatch({ ...key, type: 'start', run });
     if (!committed) { myRun = null; camera.stopCamera(); return; }
-    if (!manual) camera.play(run, current.pending.sign, threshold(state.settings));
+    if (!manual) camera.play(run, current.pending.sign, threshold(state.settings), active().pending.deadline);
     audio.play('start');
     startClock();
     void refreshDevices();
@@ -243,17 +252,16 @@ async function recoverCamera({ message, workers }) {
 async function leaveRun(type) {
   const p = active();
   if (!p?.pending) return;
+  const now = performance.now();
   const key = attemptKey(p);
   starting = undefined;
   problem = '';
   camera.stopCamera();
-  await dispatch({ type, ...key });
+  await dispatch({ type, ...key, now });
 }
-async function settle(method, run) {
+async function settle(method, run, now = performance.now()) {
   const p = active();
   if (!p?.pending?.deadline || p.pending.run !== run || myRun !== run || finishing) return;
-  const now = Date.now();
-  if (method !== 'timeout' && now >= p.pending.deadline) return;
   finishing = true;
   const changed = dispatch({ ...attemptKey(p), type: 'result', method, now });
   finishing = false;
@@ -265,7 +273,7 @@ async function settle(method, run) {
   const correct = successful(result);
   if (correct) {
     const streak = streaks(current).current;
-    const perfect = score(current) === 50;
+    const perfect = correctCount(current) === MAX_ROUNDS;
     audio.play(perfect ? 'perfect' : streak >= 3 ? 'streak' : 'win');
     confetti($('confetti'), streak >= 3 ? 2 : 1);
   } else audio.play('timeout');
@@ -337,6 +345,19 @@ function resetPlay(type) {
   camera.stopCamera();
   if (type === 'new-game') resetRoster();
   dispatch({ type });
+  applyUpdateBetweenGames();
+  if (type === 'new-game') void checkForUpdate();
+}
+
+function applyUpdateBetweenGames() {
+  if (!updateReady || state.people.length || hasDialog() ||
+      [...$('roster').querySelectorAll('input')].some(input => input.value.trim())) return;
+  updateReady = false;
+  location.reload();
+}
+
+async function checkForUpdate() {
+  try { await (await navigator.serviceWorker?.getRegistration())?.update(); } catch { /* The existing cache still works offline. */ }
 }
 
 const actions = {
@@ -404,7 +425,8 @@ const actions = {
     const result = p?.results.find(item => item.id === control.dataset.challenge);
     if (!result) return;
     const award = !successful(result);
-    confirmChange('Set ' + signById[result.sign].word + ' to ' + (award ? 10 : 0) + ' points for ' + p.name + '?', 'Save correction',
+    const points = award ? correctionPoints(result) : 0;
+    confirmChange('Set ' + signById[result.sign].word + ' to ' + formatPoints(points) + ' points for ' + p.name + '?', 'Save correction',
       () => dispatch({ type: 'correct', personId: p.id, challengeId: result.id, award }));
   },
   async retry() {
@@ -471,7 +493,10 @@ $('registration').addEventListener('submit', event => {
     $('roster').querySelector('input').focus();
   }
 });
-$('roster').addEventListener('input', () => { $('roster-error').hidden = true; });
+$('roster').addEventListener('input', () => {
+  $('roster-error').hidden = true;
+  applyUpdateBetweenGames();
+});
 $('leader-dialog').addEventListener('close', () => {
   const board = $('leader-dialog');
   if (board.dataset.enteredFullscreen && document.fullscreenElement) void document.exitFullscreen().catch(() => {});
@@ -505,7 +530,14 @@ $('host').addEventListener('input', event => {
   if (event.target.id === 'custom') say($('custom-value'), event.target.value);
 });
 navigator.mediaDevices?.addEventListener('devicechange', () => { if ($('host').open) void refreshDevices().then(render); });
-navigator.serviceWorker?.addEventListener('controllerchange', () => { void refreshOffline(); });
+navigator.serviceWorker?.addEventListener('controllerchange', () => {
+  const next = navigator.serviceWorker.controller;
+  if (controller && next && next !== controller) updateReady = true;
+  controller = next;
+  void refreshOffline();
+  applyUpdateBetweenGames();
+});
+for (const dialog of document.querySelectorAll('dialog')) dialog.addEventListener('close', applyUpdateBetweenGames);
 document.addEventListener('visibilitychange', () => {
   if (document.hidden && myRun && active()?.pending?.run === myRun) void leaveRun('pause');
 });

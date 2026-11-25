@@ -13,6 +13,8 @@
 2. The current player takes the camera position, spins, watches the demonstration, and selects **Ready**. The 20-second clock starts after the webcam and workers are ready. Select **Next Player** after the result to hand off the laptop. The next person chooses when to start their challenge.
 3. After everyone has played five turns, select **See final results**. The podium stays visible until **New Game**. Use **New Game** for the next group. Refreshing or closing the tab clears names, scores and progress.
 
+A correct sign earns 10.00 minus 0.25 points per active second, rounded to hundredths. A timeout earns 0.00. The potential points display pauses with the timer. Use **Confirm correct** promptly when judging a turn. A correction restores the recorded award, or awards the 5.00 base if the original result was a timeout.
+
 ## Host recovery
 
 - Open the gear or press **Alt+H**. **Pause** stops the timer and camera. **Resume** continues the current turn. **Restart turn** returns to its demonstration with 20 seconds. **Skip challenge** lets the same player spin again.

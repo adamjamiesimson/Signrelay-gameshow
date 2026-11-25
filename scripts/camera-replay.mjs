@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { launch } from './browser-common.mjs';
 import { serve } from './serve.mjs';
+import { formatPoints, weightedPoints } from '../src/game.mjs';
 
 const [sample, target = 'PLEASE', wrong = 'DRINK', random = '0'] = process.argv.slice(2);
 if (!sample) throw new Error('Usage: node scripts/camera-replay.mjs <please.y4m>');
@@ -28,7 +29,7 @@ try {
   const spin = () => page.locator('#wheel-copy').getByRole('button', { name: 'Spin the wheel', exact: true }).click();
   const lesson = word => page.getByRole('heading', { name: word, exact: true }).waitFor();
   await click('Host controls');
-  await page.waitForFunction(() => document.querySelector('#diagnostics').textContent.includes('Model  Ready'));
+  await page.waitForFunction(() => document.querySelector('#diagnostics').textContent.includes('Model  Ready'), null, { timeout: 95000 });
   await click('Close host controls');
   await spin();
   await lesson(target);
@@ -46,7 +47,15 @@ try {
   }
   await page.getByRole('heading', { name: 'You signed it!', exact: true }).waitFor({ timeout: 26000 });
   const targetMs = Math.round(performance.now() - targetStart);
-  assert.match(await page.locator('#result-stage').textContent(), /\+10/);
+  const awardNode = page.locator('#result-stage [data-award]');
+  const weighted = await awardNode.count() > 0;
+  let award = 1000;
+  if (weighted) {
+    award = Number(await awardNode.getAttribute('data-award'));
+    const time = Number.parseFloat(await page.locator('.score-breakdown dd').first().textContent());
+    assert.ok(award >= 500 && award <= 1000);
+    assert.ok(Math.abs(award - weightedPoints(time * 1000)) <= 1, 'Award did not match the displayed signing time');
+  } else assert.match(await page.locator('#result-stage').textContent(), /\+10/);
   await click('Next round');
   await spin();
   await lesson(wrong);
@@ -57,8 +66,8 @@ try {
   const timeoutMs = Math.round(performance.now() - began);
   assert.ok(timeoutMs >= 19_500 && timeoutMs <= 21_500, 'Wrong-target round deadline drift: ' + timeoutMs + ' ms');
   assert.match(await page.locator('#result-stage').textContent(), /\+0/);
-  assert.match(await page.locator('#board-list [aria-current=true] .board-score').textContent(), /^10\/50$/);
-  console.log('PASS prerecorded ' + target + ' awarded one automatic +10 after ' + targetMs + ' ms; ' +
+  assert.equal(await page.locator('#board-list [aria-current=true] .board-score').textContent(), (weighted ? formatPoints(award) : '10') + '/50');
+  console.log('PASS prerecorded ' + target + ' awarded one automatic +' + formatPoints(award) + ' after ' + targetMs + ' ms; ' +
     wrong + ' timed out after ' + timeoutMs + ' ms with no additional score.');
   if (remote) {
     const { version } = JSON.parse(await readFile('dist/runtime.json'));

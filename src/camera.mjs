@@ -1,6 +1,8 @@
 import { startWorkers } from './workers.mjs';
 import { Confirmation, PROFILE, verificationInterval } from './verification.mjs';
 
+export const MATCH_MAX_AGE_MS = 1200;
+
 const links = [[0,1],[1,2],[2,3],[3,4],[0,5],[5,6],[6,7],[7,8],[5,9],[9,10],[10,11],[11,12],
   [9,13],[13,14],[14,15],[15,16],[13,17],[17,18],[18,19],[19,20],[17,0]];
 const friendly = error => {
@@ -120,10 +122,10 @@ export class Camera {
     this.lastAnalysis = -Infinity;
   }
 
-  play(run, word, threshold) {
+  play(run, word, threshold, deadline) {
     this.stopAnalysis();
     this.resetSignal();
-    const attempt = { run, word, threshold, lastVideo: performance.now(), lastSample: -Infinity,
+    const attempt = { run, word, threshold, deadline, lastVideo: performance.now(), lastSample: -Infinity,
       lastRecognition: -Infinity, latest: -Infinity, mediaTime: -1, cadence: [] };
     this.attempt = attempt;
     this.videoFrame(attempt);
@@ -148,9 +150,15 @@ export class Camera {
       if (frame.mediaTime === attempt.mediaTime) return;
       attempt.mediaTime = frame.mediaTime;
       attempt.lastVideo = now;
+      if (now > attempt.deadline) return;
       attempt.latest = now;
       void this.capture(attempt);
     });
+  }
+
+  hasPendingMatch(run) {
+    const attempt = this.attempt;
+    return attempt?.run === run && (this.trackingAttempt === attempt || this.verifyingAttempt === attempt);
   }
 
   async capture(attempt) {
@@ -159,6 +167,7 @@ export class Camera {
     const timestamp = attempt.latest;
     attempt.lastSample = timestamp;
     this.frameBusy = true;
+    this.trackingAttempt = attempt;
     let bitmap;
     try {
       const started = performance.now();
@@ -179,6 +188,7 @@ export class Camera {
       if (this.attempt === attempt) this.fault(error.message, true);
     } finally {
       this.frameBusy = false;
+      this.trackingAttempt = undefined;
       void this.capture(this.attempt);
     }
   }
@@ -208,18 +218,20 @@ export class Camera {
         sample.t - this.lastAnalysis < verificationInterval(attempt.sparse)) return;
     this.lastAnalysis = sample.t;
     this.verifying = true;
+    this.verifyingAttempt = attempt;
     const cutoff = attempt.threshold;
     this.workers.classifier.request('verify', { timestamp: sample.t, targets: [attempt.word],
       history: this.history, sparse: attempt.sparse, stopAbove: cutoff }).then(reply => {
-      if (this.attempt !== attempt || performance.now() - reply.timestamp > 1200 || cutoff !== attempt.threshold) return;
+      if (this.attempt !== attempt || performance.now() - reply.timestamp > MATCH_MAX_AGE_MS || cutoff !== attempt.threshold) return;
       const [evidence] = reply.values;
       this.notify('evidence', { ...evidence, ms: reply.ms, windows: reply.windowsRun });
       if (reply.empty) { this.signal.reset(); return; }
-      if (this.signal.push(evidence.score, reply.timestamp, cutoff)) this.notify('match', attempt.run);
+      if (this.signal.push(evidence.score, reply.timestamp, cutoff)) this.notify('match', { run: attempt.run, timestamp: reply.timestamp });
     }).catch(error => {
       if (this.attempt === attempt) this.fault(error.message, true);
     }).finally(() => {
       this.verifying = false;
+      this.verifyingAttempt = undefined;
       this.verifyLatest(this.attempt);
     });
   }
