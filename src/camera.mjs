@@ -163,7 +163,7 @@ export class Camera {
 
   async capture(attempt) {
     if (this.frameBusy || !attempt || this.attempt !== attempt ||
-        !Number.isFinite(attempt.latest) || attempt.latest - attempt.lastSample < 22) return;
+        !Number.isFinite(attempt.latest) || attempt.latest - attempt.lastSample < 22 || performance.now() > attempt.deadline) return;
     const timestamp = attempt.latest;
     attempt.lastSample = timestamp;
     this.frameBusy = true;
